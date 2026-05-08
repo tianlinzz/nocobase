@@ -11,11 +11,11 @@ import { ExclamationCircleFilled, LoadingOutlined } from '@ant-design/icons';
 import { css } from '@emotion/css';
 import { FormButtonGroup, FormItem, FormLayout } from '@formily/antd-v5';
 import { createForm } from '@formily/core';
-import { createSchemaField, FormProvider } from '@formily/react';
+import { connect, createSchemaField, FormProvider } from '@formily/react';
 import { observable } from '@formily/reactive';
-import { Cascader, ActionModel, ActionSceneEnum } from '@nocobase/client';
+import { ActionModel, ActionSceneEnum } from '@nocobase/client';
 import { escapeT, observer } from '@nocobase/flow-engine';
-import { Button, Space, Spin, Upload } from 'antd';
+import { Button, Cascader as AntdCascader, Space, Spin, Upload } from 'antd';
 import type { ButtonProps } from 'antd/es/button';
 import { saveAs } from 'file-saver';
 import React from 'react';
@@ -36,6 +36,21 @@ const initImportSettings = (fields) => {
     .map((f) => ({ dataIndex: [f.name] }));
   return { importColumns, explain: '' };
 };
+
+const FieldSettingsCascader = connect(
+  React.memo((props: any) => {
+    const { onChange, value, ...others } = props;
+    return (
+      <AntdCascader
+        {...others}
+        value={value}
+        onChange={(nextValue) => {
+          onChange?.(nextValue?.length ? nextValue : null);
+        }}
+      />
+    );
+  }),
+);
 
 const importFormSchema = {
   type: 'object',
@@ -347,7 +362,7 @@ ImportActionModel.registerFlow({
                     dataIndex: {
                       type: 'array',
                       'x-decorator': 'FormItem',
-                      'x-component': Cascader,
+                      'x-component': FieldSettingsCascader,
                       required: true,
 
                       'x-component-props': {

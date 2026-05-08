@@ -10,10 +10,13 @@
 import { escapeT } from '@nocobase/flow-engine';
 import type { ButtonProps } from 'antd/es/button';
 import { saveAs } from 'file-saver';
-import { ActionModel, Cascader, ActionSceneEnum } from '@nocobase/client';
+import { ActionModel, ActionSceneEnum } from '@nocobase/client';
 import { css } from '@emotion/css';
 import { getOptionFields } from './getOptionFields';
 import { NAMESPACE } from '../locale';
+import { connect } from '@formily/react';
+import { Cascader as AntdCascader } from 'antd';
+import React from 'react';
 
 const initExportSettings = (fields) => {
   const exportSettings = fields
@@ -21,6 +24,22 @@ const initExportSettings = (fields) => {
     .map((f) => ({ dataIndex: [f.name] }));
   return exportSettings;
 };
+
+const FieldSettingsCascader = connect(
+  React.memo((props: any) => {
+    const { onChange, value, ...others } = props;
+    return (
+      <AntdCascader
+        {...others}
+        value={value}
+        onChange={(nextValue) => {
+          onChange?.(nextValue?.length ? nextValue : null);
+        }}
+      />
+    );
+  }),
+);
+
 export class ExportActionModel extends ActionModel {
   static scene = ActionSceneEnum.collection;
 
@@ -143,7 +162,7 @@ ExportActionModel.registerFlow({
                     dataIndex: {
                       type: 'array',
                       'x-decorator': 'FormItem',
-                      'x-component': Cascader,
+                      'x-component': FieldSettingsCascader,
                       required: true,
                       'x-component-props': {
                         fieldNames: {

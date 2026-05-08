@@ -14,5 +14,6 @@ export const getOptionFields = (fields, t) => {
     fields,
     (field) => t(field?.uiSchema?.title) || field.name,
     (field) => (field.targetCollection && field.targetCollection.getFields()) || [],
+    { includeSchema: false },
   );
 };

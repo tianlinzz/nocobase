@@ -14,20 +14,20 @@ const isRelationField = (field) => field?.target && RELATION_TYPES.includes(fiel
 
 const shouldExcludeField = (field) => !field?.interface || EXCLUDE_INTERFACES.includes(field.interface);
 
-const createOption = (field, getTitle, disabled = false) => ({
+const createOption = (field, getTitle, disabled = false, includeSchema = true) => ({
   name: field.name,
   title: getTitle(field),
-  schema: field?.uiSchema,
+  ...(includeSchema ? { schema: field?.uiSchema } : {}),
   disabled,
 });
 
-const buildFieldOption = (field, getTitle, getTargetFields, relationDepth = 0) => {
+const buildFieldOption = (field, getTitle, getTargetFields, relationDepth = 0, includeSchema = true) => {
   if (shouldExcludeField(field)) {
     return null;
   }
 
   if (!isRelationField(field)) {
-    return createOption(field, getTitle);
+    return createOption(field, getTitle, false, includeSchema);
   }
 
   const targetFields = getTargetFields(field) || [];
@@ -38,29 +38,30 @@ const buildFieldOption = (field, getTitle, getTargetFields, relationDepth = 0) =
       }
 
       if (!isRelationField(targetField)) {
-        return buildFieldOption(targetField, getTitle, getTargetFields);
+        return buildFieldOption(targetField, getTitle, getTargetFields, 0, includeSchema);
       }
 
       if (relationDepth >= 1) {
-        return createOption(targetField, getTitle, true);
+        return createOption(targetField, getTitle, true, includeSchema);
       }
 
-      return buildFieldOption(targetField, getTitle, getTargetFields, relationDepth + 1);
+      return buildFieldOption(targetField, getTitle, getTargetFields, relationDepth + 1, includeSchema);
     })
     .filter(Boolean);
 
   if (!children.length) {
-    return createOption(field, getTitle, true);
+    return createOption(field, getTitle, true, includeSchema);
   }
 
   return {
-    ...createOption(field, getTitle),
+    ...createOption(field, getTitle, false, includeSchema),
     children,
   };
 };
 
-export const buildImportFieldOptions = (fields, getTitle, getTargetFields) => {
+export const buildImportFieldOptions = (fields, getTitle, getTargetFields, options?: { includeSchema?: boolean }) => {
+  const includeSchema = options?.includeSchema ?? true;
   return (fields || [])
-    .map((field) => buildFieldOption(field, getTitle, getTargetFields, isRelationField(field) ? 1 : 0))
+    .map((field) => buildFieldOption(field, getTitle, getTargetFields, isRelationField(field) ? 1 : 0, includeSchema))
     .filter(Boolean);
 };
