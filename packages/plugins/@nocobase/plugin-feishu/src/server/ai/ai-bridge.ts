@@ -103,6 +103,23 @@ export interface CardKitClientFactory {
   (appId: string): FeishuCardKitClient;
 }
 
+/**
+ * Add/remove emoji reactions on the user's incoming Feishu message. Used by
+ * the bridge to give the user a 👀 ack the moment we route their message
+ * to AI, before the streaming card has time to render.
+ */
+export interface ReactionService {
+  add(appId: string, messageId: string, emojiType: string): Promise<{ reactionId: string }>;
+  remove(appId: string, messageId: string, reactionId: string): Promise<void>;
+}
+
+/**
+ * Feishu reaction `emoji_type` for the "received, processing" ack we add
+ * to the user's incoming message. `EYES` (👀) per the brainstorming session;
+ * see Feishu docs for the full list of valid emoji_type constants.
+ */
+const RECEIVE_REACTION_EMOJI = 'EYES';
+
 export interface AIBridgeDeps {
   app: AIBridgeAppLike;
   log: AIInvokeLogger;
@@ -113,6 +130,8 @@ export interface AIBridgeDeps {
   AIEmployee: AIEmployeeConstructor;
   /** Returns a CardKit client bound to the given Feishu app. */
   cardKitClientFor: CardKitClientFactory;
+  /** Bot-level reaction add/remove on the incoming user message. */
+  reactionService: ReactionService;
 }
 
 /**
@@ -145,6 +164,7 @@ export class FeishuAIBridge {
     }
 
     let session: ConversationInfo | undefined;
+    let reactionId: string | undefined;
     try {
       const employee = await this.findEmployee(context.aiConfig.employeeUsername);
       if (!employee) {
@@ -162,6 +182,23 @@ export class FeishuAIBridge {
           error: reason,
         });
         return;
+      }
+
+      // 👀 ack on the user's message — gives an immediate "received,
+      // processing" signal even before the CardKit thinking card lands.
+      // Failure here is non-blocking: log and proceed without the reaction
+      // rather than letting a Feishu reactions-API hiccup drop the user's
+      // actual message processing.
+      try {
+        const reactionResult = await this.deps.reactionService.add(appId, parsed.messageId, RECEIVE_REACTION_EMOJI);
+        reactionId = reactionResult.reactionId;
+      } catch (reactionErr) {
+        this.deps.log.warn('feishu reaction add failed (non-blocking)', {
+          appId,
+          messageId: parsed.messageId,
+          emojiType: RECEIVE_REACTION_EMOJI,
+          error: reactionErr instanceof Error ? reactionErr.message : String(reactionErr),
+        });
       }
 
       // Resolves (and persists, on first message) the aiConversations row for
@@ -288,6 +325,22 @@ export class FeishuAIBridge {
         error: message,
       });
       throw err;
+    } finally {
+      // Per the brainstorming "加·回复后移除" lifecycle: drop the 👀 reaction
+      // once the AI side is done (success OR failure), so the user's message
+      // doesn't keep wearing a stale "processing" indicator.
+      if (reactionId) {
+        try {
+          await this.deps.reactionService.remove(appId, parsed.messageId, reactionId);
+        } catch (removeErr) {
+          this.deps.log.warn('feishu reaction remove failed (non-blocking)', {
+            appId,
+            messageId: parsed.messageId,
+            reactionId,
+            error: removeErr instanceof Error ? removeErr.message : String(removeErr),
+          });
+        }
+      }
     }
   }
 

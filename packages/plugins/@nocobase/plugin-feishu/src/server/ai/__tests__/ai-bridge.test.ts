@@ -136,6 +136,10 @@ function setup(overrides?: {
     updateCardKitCard: vi.fn().mockResolvedValue(undefined),
   };
   const cardKitClientFor = vi.fn().mockReturnValue(cardKitClient);
+  const reactionService = {
+    add: vi.fn().mockResolvedValue({ reactionId: 'reac_xyz' }),
+    remove: vi.fn().mockResolvedValue(undefined),
+  };
 
   const bridge = new FeishuAIBridge({
     app: { db, pm: { get: pmGet } },
@@ -149,6 +153,7 @@ function setup(overrides?: {
       stream: typeof stream;
     },
     cardKitClientFor,
+    reactionService,
   });
 
   return {
@@ -166,6 +171,7 @@ function setup(overrides?: {
     aiConversationsStore,
     cardKitClient,
     cardKitClientFor,
+    reactionService,
   };
 }
 
@@ -300,5 +306,33 @@ describe('FeishuAIBridge', () => {
     const { bridge, replyMessage } = setupResult;
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(replyMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { text: 'block one block two' } }));
+  });
+
+  it('reaction: adds 👀 EYES on the incoming message and removes it after success', async () => {
+    const { bridge, reactionService } = setup({ streamChunks: ['hi'] });
+    await bridge.handleMessage('app1', baseParsed, baseContext);
+    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'EYES');
+    expect(reactionService.remove).toHaveBeenCalledWith('app1', 'om_1', 'reac_xyz');
+  });
+
+  it('reaction: still removes the reaction in the failure path', async () => {
+    const { bridge, reactionService } = setup({ streamError: new Error('llm down') });
+    await expect(bridge.handleMessage('app1', baseParsed, baseContext)).rejects.toThrow('llm down');
+    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'EYES');
+    expect(reactionService.remove).toHaveBeenCalledWith('app1', 'om_1', 'reac_xyz');
+  });
+
+  it('reaction: add failure is non-blocking and skips remove (no reactionId captured)', async () => {
+    const setupResult = setup({ streamChunks: ['ok'] });
+    setupResult.reactionService.add.mockRejectedValue(new Error('reaction api down'));
+    const { bridge, reactionService, log, messageLogService } = setupResult;
+    await bridge.handleMessage('app1', baseParsed, baseContext);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/reaction add failed/i),
+      expect.objectContaining({ emojiType: 'EYES' }),
+    );
+    expect(reactionService.remove).not.toHaveBeenCalled();
+    // AI flow still completes
+    expect(messageLogService.record).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
   });
 });

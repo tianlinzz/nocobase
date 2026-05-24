@@ -239,6 +239,10 @@ export class PluginFeishuServer extends Plugin {
       messageLogService,
       AIEmployee: aiEmployeeClass,
       cardKitClientFor: (appId) => clientManager.getCardKitClient(appId),
+      reactionService: {
+        add: (appId, messageId, emojiType) => clientManager.addReaction({ appId, messageId, emojiType }),
+        remove: (appId, messageId, reactionId) => clientManager.removeReaction({ appId, messageId, reactionId }),
+      },
     });
 
     const cardActionRouter = new CardActionRouter({ cardRecordService, cardActionDedup, conversationManager });

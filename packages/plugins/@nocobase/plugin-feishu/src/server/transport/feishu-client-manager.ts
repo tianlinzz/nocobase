@@ -117,6 +117,50 @@ export class FeishuClientManager {
     };
   }
 
+  /**
+   * Add an emoji reaction to a Feishu message. Used by the AI bridge to
+   * give the user immediate "received, processing" feedback on their own
+   * message before the AI's streaming card has time to render.
+   *
+   * `emojiType` must be one of Feishu's predefined reaction emoji_type
+   * constants (e.g. `'EYES'`, `'OK'`, `'DONE'`); arbitrary unicode emoji
+   * are rejected by the Feishu API with code 231001.
+   */
+  async addReaction(params: { appId: string; messageId: string; emojiType: string }): Promise<{ reactionId: string }> {
+    const client = this.requireClient(params.appId);
+    const resp = await client.im.messageReaction.create({
+      data: { reaction_type: { emoji_type: params.emojiType } },
+      path: { message_id: params.messageId },
+    });
+    if (resp.code !== 0) {
+      throw new FeishuApiError(
+        `feishu addReaction failed: ${resp.msg ?? 'unknown'}`,
+        resp.code ?? -1,
+        extractRequestId(resp),
+      );
+    }
+    const reactionId = resp.data?.reaction_id;
+    if (!reactionId) {
+      throw new FeishuApiError('feishu addReaction returned no reaction_id', -1, extractRequestId(resp));
+    }
+    return { reactionId };
+  }
+
+  /** Remove a previously added reaction. Pair with {@link addReaction}. */
+  async removeReaction(params: { appId: string; messageId: string; reactionId: string }): Promise<void> {
+    const client = this.requireClient(params.appId);
+    const resp = await client.im.messageReaction.delete({
+      path: { message_id: params.messageId, reaction_id: params.reactionId },
+    });
+    if (resp.code !== 0) {
+      throw new FeishuApiError(
+        `feishu removeReaction failed: ${resp.msg ?? 'unknown'}`,
+        resp.code ?? -1,
+        extractRequestId(resp),
+      );
+    }
+  }
+
   async updateMessage(params: UpdateMessageParams): Promise<void> {
     const client = this.requireClient(params.appId);
     const resp = await client.im.message.patch({
