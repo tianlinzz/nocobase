@@ -7,10 +7,12 @@
  * For more information, please refer to: https://www.nocobase.com/agreement.
  */
 
-import { Plugin } from '@nocobase/client-v2';
+import { Plugin, Application } from '@nocobase/client-v2';
 
-export class PluginFeishuClientV2 extends Plugin {
-  async load() {}
+export class PluginFeishuClientV2 extends Plugin<any, Application> {
+  async load() {
+    // populated in phase 9
+  }
 }
 
 export default PluginFeishuClientV2;

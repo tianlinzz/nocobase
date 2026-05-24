@@ -7,15 +7,12 @@
  * For more information, please refer to: https://www.nocobase.com/agreement.
  */
 
-import { tExpr as _tExpr, useFlowEngine } from '@nocobase/flow-engine';
+import { tval } from '@nocobase/utils/client';
 // @ts-ignore
 import pkg from '../../package.json';
 
-export function useT() {
-  const engine = useFlowEngine();
-  return (str: string) => engine.context.t(str, { ns: [pkg.name, 'client'] });
-}
+export const NAMESPACE = pkg.name;
 
-export function tExpr(key: string) {
-  return _tExpr(key, { ns: [pkg.name, 'client'] });
-}
+export const generateNTemplate = (key: string) => `{{t(${JSON.stringify(key)}, { ns: "${NAMESPACE}" })}}`;
+
+export const tExpr = (key: string) => generateNTemplate(key);
