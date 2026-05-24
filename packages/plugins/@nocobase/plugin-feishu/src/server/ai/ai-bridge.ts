@@ -13,6 +13,9 @@ import type { FeishuMessageContext, ParsedMessage } from '../message/types';
 import type { ConversationInfo, FeishuConversationManager } from './conversation-manager';
 import type { AIInvokeLogger, BuildAIInvokeContextAppLike } from './ai-context-factory';
 import type { FeishuResponseRenderer } from './response-renderer';
+import type { FeishuCardKitClient } from '../transport/feishu-cardkit-client';
+import { StreamingCardController } from './streaming-card-controller';
+import { parseSSEFrames } from './sse-frame-parser';
 
 /**
  * AIEmployee.invoke expects each user message's `content` to be the wrapped
@@ -29,6 +32,13 @@ interface AIMessageContentLike {
 
 interface AIEmployeeLike {
   invoke: (args: { userMessages: { role: 'user'; content: AIMessageContentLike }[] }) => Promise<unknown>;
+  /**
+   * Streaming path used when the CardKit card has been created. The plugin-ai
+   * implementation writes SSE frames to `ctx.res.write` (see
+   * `ChatStreamProtocol.fromContext`); the bridge intercepts them via
+   * `streamWriter` in the context factory.
+   */
+  stream: (args: { userMessages: { role: 'user'; content: AIMessageContentLike }[] }) => Promise<boolean>;
 }
 
 export interface ModelRef {
@@ -89,6 +99,10 @@ export interface AIBridgeContextFactory {
   }): Promise<Context>;
 }
 
+export interface CardKitClientFactory {
+  (appId: string): FeishuCardKitClient;
+}
+
 export interface AIBridgeDeps {
   app: AIBridgeAppLike;
   log: AIInvokeLogger;
@@ -97,6 +111,8 @@ export interface AIBridgeDeps {
   responseRenderer: FeishuResponseRenderer;
   messageLogService: MessageLogService;
   AIEmployee: AIEmployeeConstructor;
+  /** Returns a CardKit client bound to the given Feishu app. */
+  cardKitClientFor: CardKitClientFactory;
 }
 
 /**
@@ -172,31 +188,74 @@ export class FeishuAIBridge {
       // `this.model = undefined` and throws "LLM service not configured".
       const resolvedModel = await this.resolveModel(employee);
 
-      const textChunks: string[] = [];
-      const ctx = await this.deps.contextFactory({
-        app: this.deps.app,
+      // 1. Try to start the streaming card. CardKit creation is the only
+      //    point where we can detect the AI surface is unreachable before
+      //    bothering the LLM. On failure, controller.needsFallback()
+      //    returns true and we drop down to the legacy invoke path.
+      const cardkit = this.deps.cardKitClientFor(appId);
+      const controller = new StreamingCardController({
+        cardkit,
+        receiveId: parsed.chatType === 'p2p' ? parsed.senderOpenId : parsed.chatId,
+        receiveIdType: parsed.chatType === 'p2p' ? 'open_id' : 'chat_id',
         log: this.deps.log,
-        feishuContext: context,
-        actAsUserId: context.aiConfig.actAsUserId,
-        streamWriter: (chunk) => collectContentChunks(chunk, textChunks),
       });
+      const startResult = await controller.start();
 
-      const aiEmployee = new this.deps.AIEmployee({
-        ctx,
-        employee,
-        sessionId: session.sessionId,
-        model: resolvedModel,
-      });
       const userText = parsed.content.type === 'text' ? parsed.content.text : '';
-      const result = await aiEmployee.invoke({
-        userMessages: [{ role: 'user', content: { type: 'text', content: userText } }],
-      });
+      const userMessages = [{ role: 'user' as const, content: { type: 'text' as const, content: userText } }];
 
-      await this.deps.responseRenderer.render({
-        parsed: { messageId: parsed.messageId, chatId: parsed.chatId },
-        context: { appId, chat: { chatType: parsed.chatType } },
-        aiOutput: { text: getResultText(result) ?? textChunks.join('') },
-      });
+      if (!startResult.ok) {
+        // Fallback path: CardKit unavailable, send a plain text reply via the
+        // legacy renderer so the user still gets an answer.
+        this.deps.log.warn('feishu cardkit unavailable, falling back to text reply', {
+          appId,
+          eventId: parsed.eventId,
+        });
+        const textChunks: string[] = [];
+        const fallbackCtx = await this.deps.contextFactory({
+          app: this.deps.app,
+          log: this.deps.log,
+          feishuContext: context,
+          actAsUserId: context.aiConfig.actAsUserId,
+          streamWriter: (chunk) => collectContentChunks(chunk, textChunks),
+        });
+        const fallbackEmployee = new this.deps.AIEmployee({
+          ctx: fallbackCtx,
+          employee,
+          sessionId: session.sessionId,
+          model: resolvedModel,
+        });
+        const result = await fallbackEmployee.invoke({ userMessages });
+        await this.deps.responseRenderer.render({
+          parsed: { messageId: parsed.messageId, chatId: parsed.chatId },
+          context: { appId, chat: { chatType: parsed.chatType } },
+          aiOutput: { text: getResultText(result) ?? textChunks.join('') },
+        });
+      } else {
+        // Streaming path: feed parsed SSE frames into the controller.
+        const ctx = await this.deps.contextFactory({
+          app: this.deps.app,
+          log: this.deps.log,
+          feishuContext: context,
+          actAsUserId: context.aiConfig.actAsUserId,
+          streamWriter: (chunk) => {
+            for (const frame of parseSSEFrames(chunk)) controller.onSSEFrame(frame);
+          },
+        });
+        const aiEmployee = new this.deps.AIEmployee({
+          ctx,
+          employee,
+          sessionId: session.sessionId,
+          model: resolvedModel,
+        });
+        try {
+          await aiEmployee.stream({ userMessages });
+          await controller.complete();
+        } catch (err) {
+          await controller.error(err instanceof Error ? err.message : String(err));
+          throw err;
+        }
+      }
 
       await this.deps.messageLogService.record({
         appId,

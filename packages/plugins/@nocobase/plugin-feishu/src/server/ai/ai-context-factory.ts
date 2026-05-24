@@ -106,6 +106,10 @@ export async function buildAIInvokeContext(opts: BuildAIInvokeContextOptions): P
       write: (chunk: string) => {
         streamWriter?.(chunk);
       },
+      // AIEmployee.processChatStream calls ctx.res.end() in its finally block
+      // when from === 'main-agent'. Provide a no-op so the SSE-style stream
+      // path does not blow up on a missing method.
+      end: () => undefined,
     },
   };
 

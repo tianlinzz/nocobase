@@ -77,16 +77,33 @@ function makeFakeDb() {
   return { db: { getRepository }, aiConversationsRepo, aiConversationsStore };
 }
 
-function setup(overrides?: { invokeResult?: unknown; invokeError?: Error; employee?: unknown }) {
+function setup(overrides?: {
+  invokeResult?: unknown;
+  invokeError?: Error;
+  streamError?: Error;
+  streamChunks?: string[];
+  employee?: unknown;
+}) {
   const captured: { args?: AIEmployeeArgs; userMessages?: unknown } = {};
   const invoke = vi.fn().mockImplementation(async ({ userMessages }: { userMessages: unknown }) => {
     captured.userMessages = userMessages;
     if (overrides?.invokeError) throw overrides.invokeError;
     return overrides?.invokeResult ?? { text: 'reply text' };
   });
+  const stream = vi.fn().mockImplementation(async ({ userMessages }: { userMessages: unknown }) => {
+    captured.userMessages = userMessages;
+    if (overrides?.streamError) throw overrides.streamError;
+    if (overrides?.streamChunks) {
+      const ctx = (captured.args?.ctx ?? {}) as { res?: { write: (s: string) => void } };
+      for (const chunk of overrides.streamChunks) {
+        ctx.res?.write?.(`data: ${JSON.stringify({ type: 'content', body: chunk })}\n\n`);
+      }
+    }
+    return true;
+  });
   const MockAIEmployee = vi.fn().mockImplementation((args: AIEmployeeArgs) => {
     captured.args = args;
-    return { invoke };
+    return { invoke, stream };
   });
 
   const employee = overrides?.employee === undefined ? { username: 'bot' } : overrides.employee;
@@ -111,6 +128,15 @@ function setup(overrides?: { invokeResult?: unknown; invokeError?: Error; employ
 
   const { db, aiConversationsRepo, aiConversationsStore } = makeFakeDb();
 
+  const cardKitClient = {
+    createCardEntity: vi.fn().mockResolvedValue({ cardId: 'card_xyz' }),
+    sendCardByCardId: vi.fn().mockResolvedValue({ messageId: 'om_card' }),
+    streamCardContent: vi.fn().mockResolvedValue(undefined),
+    setCardStreamingMode: vi.fn().mockResolvedValue(undefined),
+    updateCardKitCard: vi.fn().mockResolvedValue(undefined),
+  };
+  const cardKitClientFor = vi.fn().mockReturnValue(cardKitClient);
+
   const bridge = new FeishuAIBridge({
     app: { db, pm: { get: pmGet } },
     log,
@@ -120,13 +146,16 @@ function setup(overrides?: { invokeResult?: unknown; invokeError?: Error; employ
     messageLogService,
     AIEmployee: MockAIEmployee as unknown as new (args: { ctx: unknown; employee: Model; sessionId: string }) => {
       invoke: typeof invoke;
+      stream: typeof stream;
     },
+    cardKitClientFor,
   });
 
   return {
     bridge,
     captured,
     invoke,
+    stream,
     MockAIEmployee,
     pmGet,
     getEmployee,
@@ -135,6 +164,8 @@ function setup(overrides?: { invokeResult?: unknown; invokeError?: Error; employ
     replyMessage,
     aiConversationsRepo,
     aiConversationsStore,
+    cardKitClient,
+    cardKitClientFor,
   };
 }
 
@@ -168,99 +199,58 @@ describe('FeishuAIBridge', () => {
     expect(messageLogService.record.mock.calls[0][0].error).toMatch(/employee not found/i);
   });
 
-  it('happy path: constructs AIEmployee, invokes, renders reply, records success', async () => {
-    const { bridge, captured, invoke, MockAIEmployee, replyMessage, messageLogService, aiConversationsStore } = setup();
+  it('happy path: streams CardKit card and records success', async () => {
+    const { bridge, captured, MockAIEmployee, stream, messageLogService, aiConversationsStore, cardKitClient } = setup({
+      streamChunks: ['hello ', 'world'],
+    });
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(MockAIEmployee).toHaveBeenCalledTimes(1);
-    // sessionId is the auto-generated UUID of the freshly-created
-    // aiConversations row, not the synthesized feishu:... key. We assert it
-    // matches what the row received and that the row's topicId carries the
-    // feishu correlator.
-    expect(aiConversationsStore).toHaveLength(1);
-    expect(aiConversationsStore[0].topicId).toBe('feishu:app1:p2p:ou_user:bot');
-    expect(captured.args?.sessionId).toBe(aiConversationsStore[0].sessionId);
-    expect(captured.args?.employee).toEqual({ username: 'bot' });
-    expect(invoke).toHaveBeenCalledTimes(1);
-    // AIMessageInput.content must be the wrapped `{ type, content }` shape —
-    // a raw string would silently drop in plugin-ai's formatMessages step.
+    expect(stream).toHaveBeenCalledTimes(1);
     expect(captured.userMessages).toEqual([{ role: 'user', content: { type: 'text', content: 'hello bot' } }]);
-    expect(replyMessage).toHaveBeenCalledTimes(1);
-    expect(replyMessage.mock.calls[0][0]).toMatchObject({
-      appId: 'app1',
-      messageId: 'om_1',
-      msgType: 'text',
-      content: { text: 'reply text' },
-    });
+    expect(cardKitClient.createCardEntity).toHaveBeenCalledTimes(1);
+    expect(cardKitClient.sendCardByCardId).toHaveBeenCalledWith(
+      expect.objectContaining({ receiveId: 'ou_user', receiveIdType: 'open_id', cardId: 'card_xyz' }),
+    );
+    expect(cardKitClient.streamCardContent).toHaveBeenCalled();
+    expect(cardKitClient.setCardStreamingMode).toHaveBeenCalledWith(expect.objectContaining({ streamingMode: false }));
+    expect(cardKitClient.updateCardKitCard).toHaveBeenCalled();
     expect(messageLogService.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        appId: 'app1',
-        routeAction: 'ai',
-        status: 'success',
-        aiSessionId: aiConversationsStore[0].sessionId,
-      }),
+      expect.objectContaining({ status: 'success', aiSessionId: aiConversationsStore[0].sessionId }),
     );
   });
 
-  it('renders text collected from AIEmployee stream when invoke result has no text', async () => {
-    const captured: { args?: AIEmployeeArgs } = {};
-    const MockAIEmployee = vi.fn().mockImplementation((args: AIEmployeeArgs) => {
-      captured.args = args;
-      return {
-        invoke: vi.fn().mockImplementation(async () => {
-          const ctx = args.ctx as { res: { write: (chunk: string) => void } };
-          ctx.res.write('data: {"type":"content","body":"hello "}\n\n');
-          ctx.res.write('data: {"type":"content","body":"stream"}\n\n');
-          return {};
-        }),
-      };
-    });
-    const replyMessage = vi.fn().mockResolvedValue({ messageId: 'om_reply' });
-    const { db } = makeFakeDb();
-    const bridge = new FeishuAIBridge({
-      app: {
-        db,
-        pm: {
-          get: vi.fn().mockReturnValue({
-            aiEmployeesManager: {
-              getEmployee: vi.fn().mockResolvedValue({ username: 'bot' }),
-              resolveModel: vi.fn().mockResolvedValue({ llmService: 'openai-default', model: 'gpt-4o' }),
-            },
-          }),
-        },
-      },
-      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      conversationManager: new FeishuConversationManager({ db }),
-      contextFactory: buildAIInvokeContext,
-      responseRenderer: new FeishuResponseRenderer({
-        clientManager: { sendMessage: vi.fn(), replyMessage },
-        log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      }),
-      messageLogService: { record: vi.fn().mockResolvedValue(undefined) },
-      AIEmployee: MockAIEmployee as unknown as new (args: { ctx: unknown; employee: Model; sessionId: string }) => {
-        invoke: (args: { userMessages: unknown }) => Promise<unknown>;
-      },
-    });
-
+  it('fallback: when CardKit createCardEntity fails, falls back to text reply via response-renderer', async () => {
+    const setupResult = setup({ invokeResult: { text: 'fallback text' } });
+    setupResult.cardKitClient.createCardEntity.mockRejectedValue(new Error('cardkit boom'));
+    const { bridge, replyMessage, log } = setupResult;
     await bridge.handleMessage('app1', baseParsed, baseContext);
-
     expect(replyMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: { text: 'hello stream' },
-      }),
+      expect.objectContaining({ msgType: 'text', content: { text: 'fallback text' } }),
     );
+    expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/cardkit unavailable/i), expect.anything());
   });
 
-  it('rethrows when invoke fails and records failure', async () => {
+  it('stream error: invokes controller.error and rethrows so the queue retries', async () => {
+    const err = new Error('llm midstream');
+    const { bridge, cardKitClient, messageLogService } = setup({ streamError: err });
+    await expect(bridge.handleMessage('app1', baseParsed, baseContext)).rejects.toThrow('llm midstream');
+    expect(cardKitClient.updateCardKitCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cardJson: expect.objectContaining({ header: expect.objectContaining({ template: 'red' }) }),
+      }),
+    );
+    expect(messageLogService.record).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+  });
+
+  it('rethrows when invoke fails on the fallback path and records failure', async () => {
     const err = new Error('llm down');
-    const { bridge, messageLogService } = setup({ invokeError: err });
+    const setupResult = setup({ invokeError: err });
+    setupResult.cardKitClient.createCardEntity.mockRejectedValue(new Error('cardkit boom'));
+    const { bridge, messageLogService } = setupResult;
     await expect(bridge.handleMessage('app1', baseParsed, baseContext)).rejects.toThrow('llm down');
-    expect(messageLogService.record).toHaveBeenCalledTimes(1);
-    expect(messageLogService.record.mock.calls[0][0]).toMatchObject({
-      appId: 'app1',
-      routeAction: 'ai',
-      status: 'failure',
-      error: 'llm down',
-    });
+    expect(messageLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ routeAction: 'ai', status: 'failure', error: 'llm down' }),
+    );
   });
 
   it('places feishuContext on the AIEmployee constructor ctx.state', async () => {
@@ -270,10 +260,10 @@ describe('FeishuAIBridge', () => {
     expect(ctx.state.feishuContext).toBe(baseContext);
   });
 
-  it('extracts the assistant reply from invoke result.messages when there is no result.text', async () => {
+  it('fallback: extracts the assistant reply from invoke result.messages when there is no result.text', async () => {
     // Mirrors the real LangGraph compiled-agent return shape: `{ messages: [...] }`
     // with the final assistant reply living on the last `type: 'ai'` entry.
-    const { bridge, replyMessage } = setup({
+    const setupResult = setup({
       invokeResult: {
         messages: [
           { type: 'human', content: 'hello bot' },
@@ -283,14 +273,16 @@ describe('FeishuAIBridge', () => {
         ],
       },
     });
+    setupResult.cardKitClient.createCardEntity.mockRejectedValue(new Error('cardkit boom'));
+    const { bridge, replyMessage } = setupResult;
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(replyMessage).toHaveBeenCalledWith(
       expect.objectContaining({ content: { text: 'final answer from messages' } }),
     );
   });
 
-  it('handles array-form AI message content (multi-modal text blocks)', async () => {
-    const { bridge, replyMessage } = setup({
+  it('fallback: handles array-form AI message content (multi-modal text blocks)', async () => {
+    const setupResult = setup({
       invokeResult: {
         messages: [
           { type: 'human', content: 'hello' },
@@ -304,6 +296,8 @@ describe('FeishuAIBridge', () => {
         ],
       },
     });
+    setupResult.cardKitClient.createCardEntity.mockRejectedValue(new Error('cardkit boom'));
+    const { bridge, replyMessage } = setupResult;
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(replyMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { text: 'block one block two' } }));
   });

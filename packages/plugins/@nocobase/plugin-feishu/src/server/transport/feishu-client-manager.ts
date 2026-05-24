@@ -19,6 +19,7 @@ import {
   UpdateMessageParams,
   UploadImageParams,
 } from './types';
+import { FeishuCardKitClient } from './feishu-cardkit-client';
 
 const stringifyContent = (content: unknown): string =>
   typeof content === 'string' ? content : JSON.stringify(content);
@@ -50,6 +51,16 @@ export class FeishuClientManager {
 
   hasApp(appId: string): boolean {
     return this.clients.has(appId);
+  }
+
+  /**
+   * Lazy-construct a {@link FeishuCardKitClient} bound to the given app's
+   * lark client. Returned instance is stateless w.r.t. CardKit, so it's
+   * safe to construct on every call — but throws if the app hasn't been
+   * registered via `addApp` yet.
+   */
+  getCardKitClient(appId: string): FeishuCardKitClient {
+    return new FeishuCardKitClient(this.requireClient(appId));
   }
 
   private requireClient(appId: string): Lark.Client {

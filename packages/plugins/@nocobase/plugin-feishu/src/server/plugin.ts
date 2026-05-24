@@ -238,6 +238,7 @@ export class PluginFeishuServer extends Plugin {
       responseRenderer,
       messageLogService,
       AIEmployee: aiEmployeeClass,
+      cardKitClientFor: (appId) => clientManager.getCardKitClient(appId),
     });
 
     const cardActionRouter = new CardActionRouter({ cardRecordService, cardActionDedup, conversationManager });
