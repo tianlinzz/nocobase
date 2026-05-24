@@ -27,6 +27,15 @@ export interface StreamingCardControllerDeps {
 type Phase = 'creating' | 'thinking' | 'streaming' | 'complete' | 'error';
 
 /**
+ * Placeholder text for the terminal card when no streaming content was
+ * accumulated. Mirrors `EMPTY_REPLY_FALLBACK_TEXT` in
+ * larksuite/openclaw-lark — keeps the card non-empty so the user gets a
+ * visible end state even when the LLM produced only tool_use chunks or
+ * the SSE pipe delivered nothing parseable.
+ */
+const EMPTY_REPLY_FALLBACK_TEXT = '_AI 没有输出内容_';
+
+/**
  * Time-and-byte-bounded throttle on top of a single async sink. Coalesces
  * rapid enqueue() calls into a single flush that carries the latest
  * accumulated text -- CardKit treats the element content as a full replace,
@@ -126,6 +135,10 @@ export class StreamingCardController {
   private sequence = 0;
   private readonly startTime = Date.now();
   private readonly flusher: FlushController;
+  /** Tally of non-content SSE frame types seen, for "empty card" diagnosis. */
+  private readonly nonContentFrameTypes: Record<string, number> = {};
+  /** Sample of unexpected non-string body typeof values, capped to first 5. */
+  private readonly nonStringContentBodySamples: string[] = [];
 
   constructor(private readonly deps: StreamingCardControllerDeps) {
     this.flusher = new FlushController(200, 4096, async (text) => {
@@ -168,7 +181,19 @@ export class StreamingCardController {
 
   /** Bridge feeds parsed SSE frames here as they arrive. */
   onSSEFrame(frame: SSEFrame): void {
-    if (frame.type !== 'content' || typeof frame.body !== 'string') return;
+    if (frame.type !== 'content') {
+      // count non-content frame types so a "card finalized empty" report
+      // can be diagnosed by reading the trailing breakdown in complete().
+      this.nonContentFrameTypes[frame.type] = (this.nonContentFrameTypes[frame.type] ?? 0) + 1;
+      return;
+    }
+    if (typeof frame.body !== 'string') {
+      // Capturing a sample of unexpected body types helps when a provider
+      // (e.g. anthropic with thinking blocks) emits non-string content
+      // through plugin-ai's parseResponseChunk.
+      this.nonStringContentBodySamples.push(typeof frame.body);
+      return;
+    }
     if (this.phase === 'thinking') this.phase = 'streaming';
     this.accumulatedText += frame.body;
     this.flusher.enqueue(frame.body, this.accumulatedText);
@@ -178,6 +203,28 @@ export class StreamingCardController {
   async complete(): Promise<void> {
     await this.flusher.drain();
     if (!this.cardId) return;
+    const elapsedMs = Date.now() - this.startTime;
+    // Mirrors larksuite/openclaw-lark's onIdle: if no visible text accumulated
+    // (provider only emitted tool_use chunks, or `parseResponseChunk`
+    // returned non-string bodies our SSE parser filtered out, or the LLM
+    // genuinely produced empty output), surface a fallback so the terminal
+    // card is not blank.
+    const text = this.accumulatedText || EMPTY_REPLY_FALLBACK_TEXT;
+    if (!this.accumulatedText) {
+      this.deps.log.warn('feishu cardkit complete: no streamed text accumulated, using fallback', {
+        cardId: this.cardId,
+        elapsedMs,
+        nonContentFrameTypes: this.nonContentFrameTypes,
+        nonStringContentBodySamples: this.nonStringContentBodySamples.slice(0, 5),
+      });
+    } else {
+      this.deps.log.info('feishu cardkit complete: finalizing card', {
+        cardId: this.cardId,
+        textLength: this.accumulatedText.length,
+        elapsedMs,
+        nonContentFrameTypes: this.nonContentFrameTypes,
+      });
+    }
     try {
       await this.deps.cardkit.setCardStreamingMode({
         cardId: this.cardId,
@@ -186,13 +233,17 @@ export class StreamingCardController {
       });
       await this.deps.cardkit.updateCardKitCard({
         cardId: this.cardId,
-        cardJson: buildCompleteCard(this.accumulatedText, { elapsedMs: Date.now() - this.startTime }),
+        cardJson: buildCompleteCard(text, { elapsedMs }),
         sequence: ++this.sequence,
       });
       this.phase = 'complete';
+      this.deps.log.info('feishu cardkit complete: card finalized', { cardId: this.cardId });
     } catch (err) {
       this.deps.log.warn('feishu cardkit complete finalize failed', {
         error: err instanceof Error ? err.message : String(err),
+        cardId: this.cardId,
+        textLength: text.length,
+        textPreview: text.slice(0, 200),
       });
     }
   }
@@ -207,6 +258,9 @@ export class StreamingCardController {
       });
     }
     if (!this.cardId) return;
+    // Same empty-text fallback as complete(): the user still gets to see
+    // the error message even if no streaming text arrived.
+    const text = this.accumulatedText || EMPTY_REPLY_FALLBACK_TEXT;
     try {
       await this.deps.cardkit.setCardStreamingMode({
         cardId: this.cardId,
@@ -215,13 +269,14 @@ export class StreamingCardController {
       });
       await this.deps.cardkit.updateCardKitCard({
         cardId: this.cardId,
-        cardJson: buildCompleteCard(this.accumulatedText, { errorMessage: message }),
+        cardJson: buildCompleteCard(text, { errorMessage: message }),
         sequence: ++this.sequence,
       });
       this.phase = 'error';
     } catch (err) {
       this.deps.log.warn('feishu cardkit error finalize failed', {
         error: err instanceof Error ? err.message : String(err),
+        cardId: this.cardId,
       });
     }
   }
