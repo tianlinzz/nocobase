@@ -39,6 +39,7 @@ export interface BuildAIInvokeContextOptions {
   log: AIInvokeLogger;
   feishuContext: FeishuMessageContext;
   actAsUserId?: number;
+  streamWriter?: (chunk: string) => void;
 }
 
 /**
@@ -50,7 +51,7 @@ export interface BuildAIInvokeContextOptions {
  * on the typed surface.
  */
 export async function buildAIInvokeContext(opts: BuildAIInvokeContextOptions): Promise<Context> {
-  const { app, log, feishuContext, actAsUserId } = opts;
+  const { app, log, feishuContext, actAsUserId, streamWriter } = opts;
 
   let user: UserRecordLike | null = null;
   if (typeof actAsUserId === 'number' && actAsUserId > 0) {
@@ -87,6 +88,11 @@ export async function buildAIInvokeContext(opts: BuildAIInvokeContextOptions): P
         values: {
           feishuContext,
         },
+      },
+    },
+    res: {
+      write: (chunk: string) => {
+        streamWriter?.(chunk);
       },
     },
   };

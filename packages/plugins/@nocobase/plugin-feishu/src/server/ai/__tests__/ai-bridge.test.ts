@@ -14,6 +14,7 @@ import { buildAIInvokeContext } from '../ai-context-factory';
 import { FeishuResponseRenderer } from '../response-renderer';
 import type { ParsedMessage } from '../../message/types';
 import type { FeishuMessageContext } from '../../message/types';
+import type { Model } from '@nocobase/database';
 
 const baseParsed: ParsedMessage = {
   eventId: 'ev_1',
@@ -80,7 +81,9 @@ function setup(overrides?: { invokeResult?: { text?: string }; invokeError?: Err
     contextFactory: buildAIInvokeContext,
     responseRenderer,
     messageLogService,
-    AIEmployee: MockAIEmployee as unknown as new (args: AIEmployeeArgs) => { invoke: typeof invoke },
+    AIEmployee: MockAIEmployee as unknown as new (args: { ctx: unknown; employee: Model; sessionId: string }) => {
+      invoke: typeof invoke;
+    },
   });
 
   return { bridge, captured, invoke, MockAIEmployee, pmGet, getEmployee, log, messageLogService, replyMessage };
@@ -137,6 +140,47 @@ describe('FeishuAIBridge', () => {
         routeAction: 'ai',
         status: 'success',
         aiSessionId: 'feishu:app1:p2p:ou_user',
+      }),
+    );
+  });
+
+  it('renders text collected from AIEmployee stream when invoke result has no text', async () => {
+    const captured: { args?: AIEmployeeArgs } = {};
+    const MockAIEmployee = vi.fn().mockImplementation((args: AIEmployeeArgs) => {
+      captured.args = args;
+      return {
+        invoke: vi.fn().mockImplementation(async () => {
+          const ctx = args.ctx as { res: { write: (chunk: string) => void } };
+          ctx.res.write('data: {"type":"content","body":"hello "}\n\n');
+          ctx.res.write('data: {"type":"content","body":"stream"}\n\n');
+          return {};
+        }),
+      };
+    });
+    const replyMessage = vi.fn().mockResolvedValue({ messageId: 'om_reply' });
+    const bridge = new FeishuAIBridge({
+      app: {
+        db: { getRepository: vi.fn().mockReturnValue({ findOne: vi.fn().mockResolvedValue(null) }) },
+        pm: { get: vi.fn().mockReturnValue({ aiEmployeesManager: { getEmployee: vi.fn().mockResolvedValue({}) } }) },
+      },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      conversationManager: new FeishuConversationManager(),
+      contextFactory: buildAIInvokeContext,
+      responseRenderer: new FeishuResponseRenderer({
+        clientManager: { sendMessage: vi.fn(), replyMessage },
+        log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      }),
+      messageLogService: { record: vi.fn().mockResolvedValue(undefined) },
+      AIEmployee: MockAIEmployee as unknown as new (args: { ctx: unknown; employee: Model; sessionId: string }) => {
+        invoke: (args: { userMessages: unknown }) => Promise<unknown>;
+      },
+    });
+
+    await bridge.handleMessage('app1', baseParsed, baseContext);
+
+    expect(replyMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: { text: 'hello stream' },
       }),
     );
   });

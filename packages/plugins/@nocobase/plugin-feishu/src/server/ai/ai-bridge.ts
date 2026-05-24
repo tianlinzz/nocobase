@@ -8,24 +8,23 @@
  */
 
 import type { Context } from '@nocobase/actions';
+import type { Model } from '@nocobase/database';
 import type { FeishuMessageContext, ParsedMessage } from '../message/types';
 import type { ConversationInfo, FeishuConversationManager } from './conversation-manager';
 import type { AIInvokeLogger, BuildAIInvokeContextAppLike } from './ai-context-factory';
 import type { FeishuResponseRenderer } from './response-renderer';
 
 interface AIEmployeeLike {
-  invoke: (args: {
-    userMessages: { role: 'user'; content: string }[];
-  }) => Promise<{ text?: string } | undefined | null>;
+  invoke: (args: { userMessages: { role: 'user'; content: string }[] }) => Promise<unknown>;
 }
 
 export interface AIEmployeeConstructor {
-  new (args: { ctx: Context; employee: unknown; sessionId: string }): AIEmployeeLike;
+  new (args: { ctx: Context; employee: Model; sessionId: string }): AIEmployeeLike;
 }
 
 interface AIPluginShape {
-  aiEmployeesManager?: { getEmployee: (username: string) => Promise<unknown> };
-  aiEmployees?: { findOne?: (args: { filter: { username: string } }) => Promise<unknown> };
+  aiEmployeesManager?: { getEmployee: (username: string) => Promise<Model | null> };
+  aiEmployees?: { findOne?: (args: { filter: { username: string } }) => Promise<Model | null> };
 }
 
 export interface MessageLogRecordParams {
@@ -124,11 +123,13 @@ export class FeishuAIBridge {
         senderOpenId: parsed.senderOpenId,
       });
 
+      const textChunks: string[] = [];
       const ctx = await this.deps.contextFactory({
         app: this.deps.app,
         log: this.deps.log,
         feishuContext: context,
         actAsUserId: context.aiConfig.actAsUserId,
+        streamWriter: (chunk) => collectContentChunks(chunk, textChunks),
       });
 
       const aiEmployee = new this.deps.AIEmployee({ ctx, employee, sessionId: session.sessionId });
@@ -138,7 +139,7 @@ export class FeishuAIBridge {
       await this.deps.responseRenderer.render({
         parsed: { messageId: parsed.messageId, chatId: parsed.chatId },
         context: { appId, chat: { chatType: parsed.chatType } },
-        aiOutput: { text: result?.text },
+        aiOutput: { text: getResultText(result) ?? textChunks.join('') },
       });
 
       await this.deps.messageLogService.record({
@@ -175,7 +176,7 @@ export class FeishuAIBridge {
     }
   }
 
-  private async findEmployee(username: string): Promise<unknown> {
+  private async findEmployee(username: string): Promise<Model | null> {
     const aiPlugin = this.deps.app.pm.get('ai') as AIPluginShape | null | undefined;
     if (!aiPlugin) return null;
     if (aiPlugin.aiEmployeesManager?.getEmployee) {
@@ -186,4 +187,35 @@ export class FeishuAIBridge {
     }
     return null;
   }
+}
+
+function getResultText(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  return typeof result.text === 'string' ? result.text : undefined;
+}
+
+function collectContentChunks(chunk: string, chunks: string[]): void {
+  for (const block of chunk.split('\n\n')) {
+    const dataLine = block
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('data:'));
+    if (!dataLine) continue;
+
+    const rawPayload = dataLine.slice('data:'.length).trim();
+    if (!rawPayload) continue;
+
+    try {
+      const payload = JSON.parse(rawPayload) as unknown;
+      if (isRecord(payload) && payload.type === 'content' && typeof payload.body === 'string') {
+        chunks.push(payload.body);
+      }
+    } catch {
+      // Ignore malformed stream frames; the final render step will handle empty text.
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

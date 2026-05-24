@@ -155,20 +155,23 @@ export class PluginFeishuServer extends Plugin {
     };
     const responseRenderer = new FeishuResponseRenderer({ clientManager, log: richLog });
 
-    // Resolve `AIEmployee` lazily so plugin-feishu still loads when plugin-ai
-    // is missing or disabled. The fallback class is a no-op shape that lets
-    // the bridge bail out before invoking it.
+    // Resolve `AIEmployee` lazily so plugin-feishu still loads in source trees
+    // where plugin-ai has not been built yet. If an AI route reaches this
+    // fallback, fail explicitly instead of reporting an empty successful reply.
     const aiEmployeeClass = ((): AIEmployeeConstructor => {
       try {
+        type AIEmployeeModule = typeof import('@nocobase/plugin-ai/server');
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const mod = require('@nocobase/plugin-ai/server') as { AIEmployee?: AIEmployeeConstructor };
-        if (mod.AIEmployee) return mod.AIEmployee;
-      } catch {
-        // plugin-ai not installed in this environment
+        const mod = require('@nocobase/plugin-ai/server') as AIEmployeeModule;
+        if (mod.AIEmployee) return mod.AIEmployee as unknown as AIEmployeeConstructor;
+      } catch (err) {
+        this.app.log.warn('feishu ai bridge: failed to load AIEmployee from @nocobase/plugin-ai/server', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       class FallbackAIEmployee {
-        async invoke(): Promise<{ text?: string }> {
-          return { text: '' };
+        async invoke(): Promise<never> {
+          throw new Error('@nocobase/plugin-ai/server does not export AIEmployee');
         }
       }
       return FallbackAIEmployee as unknown as AIEmployeeConstructor;
