@@ -220,6 +220,11 @@ export class PluginFeishuServer extends Plugin {
         log: opts.log,
         feishuContext: opts.feishuContext,
         actAsUserId: opts.actAsUserId,
+        // CRITICAL: must forward streamWriter through, otherwise AIEmployee's
+        // SSE writes go into a no-op `streamWriter?.(...)` short-circuit
+        // inside buildAIInvokeContext and the streaming-card-controller
+        // never sees a single frame.
+        streamWriter: opts.streamWriter,
       });
 
     // Pass the *real* Application — not a `{ db, pm }` projection. AIEmployee

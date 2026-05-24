@@ -96,6 +96,16 @@ export interface AIBridgeContextFactory {
     log: AIInvokeLogger;
     feishuContext: FeishuMessageContext;
     actAsUserId?: number;
+    /**
+     * Captures every `ctx.res.write(chunk)` call AIEmployee makes during
+     * `stream()`. The streaming-card-controller uses this to feed parsed
+     * SSE frames into its state machine. The fallback path uses it to
+     * accumulate content chunks for response-renderer. MUST be wired
+     * through to {@link buildAIInvokeContext} or the streaming sink is a
+     * silent no-op (we found this the hard way: 0 frames despite the
+     * LLM completing).
+     */
+    streamWriter?: (chunk: string) => void;
   }): Promise<Context>;
 }
 
