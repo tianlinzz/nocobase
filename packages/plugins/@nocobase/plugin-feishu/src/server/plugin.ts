@@ -513,7 +513,22 @@ export class PluginFeishuServer extends Plugin {
     // the UI does not propagate to the running WebSocket — exactly what the
     // design doc § 配置变更 requires.
     const FeishuAppModel = this.app.db.getModel(COLLECTION.apps);
-    FeishuAppModel.afterSave(async (instance: { get: (k: string) => unknown }) => {
+    // CAREFUL: afterSave runs INSIDE the request transaction, so we must
+    //  - never start a long-running operation here (the HTTP response hangs
+    //    until this resolves), and
+    //  - never write back to the same row via repo.update / model.update with
+    //    default options — that re-triggers afterSave and creates an infinite
+    //    loop.
+    //
+    // Strategy:
+    //   1. Detach the runtime reconcile via setImmediate so the save returns
+    //      immediately.
+    //   2. In the detached path, write status fields back through the same
+    //      Sequelize instance with `{ hooks: false }` to skip the re-entrancy.
+    //
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    type FeishuAppInstance = any;
+    const reconcileRuntime = async (instance: FeishuAppInstance): Promise<void> => {
       const appId = instance.get('app_id') as string;
       const status = instance.get('status') as string;
       if (!appId) return;
@@ -521,16 +536,7 @@ export class PluginFeishuServer extends Plugin {
         if (status === 'active') {
           this.app.log.info(`feishu.app.afterSave.reload app=${appId}`);
           await runtimeManager.reload(appId);
-          // Reload finished without throwing → the WS handshake succeeded with
-          // the current credentials. Stamp last_connected_at + clear last_error
-          // so the operator gets feedback even without clicking Test connection.
-          await this.app.db
-            .getRepository(COLLECTION.apps)
-            .update({
-              filter: { app_id: appId },
-              values: { last_connected_at: new Date(), last_error: null },
-            })
-            .catch(() => undefined);
+          await instance.update({ last_connected_at: new Date(), last_error: null }, { hooks: false, silent: true });
         } else {
           this.app.log.info(`feishu.app.afterSave.stop app=${appId} status=${status}`);
           await runtimeManager.stop(appId);
@@ -538,11 +544,22 @@ export class PluginFeishuServer extends Plugin {
       } catch (err) {
         const message = (err as Error).message;
         log.warn(`feishu.app.afterSave.error ${appId} ${message}`);
-        await this.app.db
-          .getRepository(COLLECTION.apps)
-          .update({ filter: { app_id: appId }, values: { last_error: message } })
-          .catch(() => undefined);
+        try {
+          await instance.update({ last_error: message }, { hooks: false, silent: true });
+        } catch {
+          /* swallow — last_error is best-effort */
+        }
       }
+    };
+
+    FeishuAppModel.afterSave((instance: FeishuAppInstance) => {
+      // Detach with setImmediate so the request's transaction commits and the
+      // HTTP response returns immediately. The reconcile runs in the next tick.
+      setImmediate(() => {
+        reconcileRuntime(instance).catch((err) => {
+          log.warn(`feishu.app.reconcile.unhandled ${(err as Error).message}`);
+        });
+      });
     });
     FeishuAppModel.afterDestroy(async (instance: { get: (k: string) => unknown }) => {
       const appId = instance.get('app_id') as string;
