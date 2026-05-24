@@ -65,3 +65,15 @@ export class FeishuApiError extends Error {
     this.name = 'FeishuApiError';
   }
 }
+
+/**
+ * Lark SDK responses don't expose `requestId` on a public type.
+ * Use this helper instead of an inline cast at every call site.
+ */
+export const extractRequestId = (resp: unknown): string | undefined => {
+  if (resp && typeof resp === 'object' && 'requestId' in resp) {
+    const id = (resp as { requestId?: unknown }).requestId;
+    return typeof id === 'string' ? id : undefined;
+  }
+  return undefined;
+};

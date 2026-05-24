@@ -8,13 +8,13 @@
  */
 
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { FeishuAppConfig } from './types';
 
-export interface WSConfig {
-  appId: string;
-  appSecret: string;
-  encryptKey?: string;
-  verificationToken?: string;
-}
+/**
+ * @deprecated Prefer {@link FeishuAppConfig}. Re-exported as a type alias to
+ * keep external callers stable without duplicating the shape.
+ */
+export type WSConfig = FeishuAppConfig;
 
 export interface WSEventHandlers {
   onMessage(appId: string, event: unknown): Promise<void>;
@@ -22,7 +22,7 @@ export interface WSEventHandlers {
 }
 
 interface Entry {
-  config: WSConfig;
+  config: FeishuAppConfig;
   client?: Lark.WSClient;
   running: boolean;
 }
@@ -32,7 +32,7 @@ export class FeishuWebSocketManager {
 
   constructor(private handlers: WSEventHandlers) {}
 
-  addConnection(config: WSConfig): void {
+  addConnection(config: FeishuAppConfig): void {
     this.entries.set(config.appId, { config, running: false });
   }
 

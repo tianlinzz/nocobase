@@ -9,6 +9,7 @@
 
 import * as Lark from '@larksuiteoapi/node-sdk';
 import {
+  extractRequestId,
   FeishuApiError,
   FeishuAppConfig,
   FeishuBotInfo,
@@ -73,12 +74,12 @@ export class FeishuClientManager {
       throw new FeishuApiError(
         `feishu sendMessage failed: ${resp.msg ?? 'unknown'}`,
         resp.code ?? -1,
-        (resp as { requestId?: string }).requestId,
+        extractRequestId(resp),
       );
     }
     return {
       messageId: resp.data?.message_id ?? '',
-      requestId: (resp as { requestId?: string }).requestId,
+      requestId: extractRequestId(resp),
     };
   }
 
@@ -96,12 +97,12 @@ export class FeishuClientManager {
       throw new FeishuApiError(
         `feishu replyMessage failed: ${resp.msg ?? 'unknown'}`,
         resp.code ?? -1,
-        (resp as { requestId?: string }).requestId,
+        extractRequestId(resp),
       );
     }
     return {
       messageId: resp.data?.message_id ?? '',
-      requestId: (resp as { requestId?: string }).requestId,
+      requestId: extractRequestId(resp),
     };
   }
 
@@ -115,7 +116,7 @@ export class FeishuClientManager {
       throw new FeishuApiError(
         `feishu updateMessage failed: ${resp.msg ?? 'unknown'}`,
         resp.code ?? -1,
-        (resp as { requestId?: string }).requestId,
+        extractRequestId(resp),
       );
     }
   }
@@ -129,16 +130,21 @@ export class FeishuClientManager {
       throw new FeishuApiError(
         `feishu uploadImage failed: ${resp.msg ?? 'unknown'}`,
         resp.code ?? -1,
-        (resp as { requestId?: string }).requestId,
+        extractRequestId(resp),
       );
     }
     return resp.data?.image_key ?? '';
   }
 
+  /**
+   * Validate the configured credentials for an app.
+   *
+   * Phase 2 only verifies that the app credentials can mint an access token; the
+   * `botName` / `botOpenId` fields on `FeishuBotInfo` are intentionally left
+   * unpopulated until a follow-up task wires `application.application.get`.
+   */
   async getBotInfo(appId: string): Promise<FeishuBotInfo> {
     const client = this.requireClient(appId);
-    // Lark SDK exposes `application.applicationApp.get` / token introspection;
-    // fall back to a lightweight access-token call to verify credentials.
     const tokenResp = await client.auth.appAccessToken.internal({
       data: {},
     });
