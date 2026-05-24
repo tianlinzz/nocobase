@@ -24,6 +24,10 @@ export interface QueueRunner<T> {
   drain(): Promise<void>;
 }
 
+export interface QueueStats {
+  apps: Record<string, { queueLength: number; lastErrors: string[] }>;
+}
+
 export interface FeishuMessageQueueOptions {
   logger: QueueLogger;
   delay?: (ms: number) => Promise<void>;
@@ -61,6 +65,20 @@ export class FeishuMessageQueue<T = unknown> implements QueueRunner<T> {
       next.catch(() => undefined),
     );
     return { enqueued: true };
+  }
+
+  /**
+   * Phase 7 stub diagnostics. The current chain implementation processes work
+   * eagerly so tracking precise queue length / per-app error history would
+   * require more state — this returns zero counts as a placeholder so the
+   * `feishuDiagnostics:queue` action can return a stable shape.
+   */
+  getStats(): QueueStats {
+    const apps: Record<string, { queueLength: number; lastErrors: string[] }> = {};
+    for (const appId of this.chains.keys()) {
+      apps[appId] = { queueLength: 0, lastErrors: [] };
+    }
+    return { apps };
   }
 
   async drain(): Promise<void> {
