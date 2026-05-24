@@ -52,7 +52,7 @@ export class FlushController {
   enqueue(_chunk: string, accumulated: string): void {
     this.buffer = accumulated;
     if (Buffer.byteLength(this.buffer, 'utf8') >= this.maxBufferBytes) {
-      void this.flushNow();
+      this.scheduleFlush();
       return;
     }
     if (this.flushing) {
@@ -64,8 +64,21 @@ export class FlushController {
       return;
     }
     if (!this.timer) {
-      this.timer = setTimeout(() => void this.flushNow(), this.intervalMs);
+      this.timer = setTimeout(() => this.scheduleFlush(), this.intervalMs);
     }
+  }
+
+  /**
+   * Wraps `flushNow()` so background-scheduled flushes (byte-threshold path
+   * and the timer callback) honour AGENTS.md's "no `void someAsyncCall()`"
+   * rule. The `onFlush` closure passed by `StreamingCardController` already
+   * catches its own errors; this guard is a safety net against future
+   * callers that might not.
+   */
+  private scheduleFlush(): void {
+    this.flushNow().catch(() => {
+      // FlushController must never crash the process; intentionally swallow.
+    });
   }
 
   async flushNow(): Promise<void> {
@@ -188,8 +201,10 @@ export class StreamingCardController {
   async error(message: string): Promise<void> {
     try {
       await this.flusher.drain();
-    } catch {
-      // swallow -- we are already on the error path
+    } catch (drainErr) {
+      this.deps.log.warn('feishu cardkit error-path drain failed', {
+        error: drainErr instanceof Error ? drainErr.message : String(drainErr),
+      });
     }
     if (!this.cardId) return;
     try {
