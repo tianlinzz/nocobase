@@ -78,10 +78,22 @@ export async function buildAIInvokeContext(opts: BuildAIInvokeContextOptions): P
     app,
     db: app.db,
     log,
+    // AIEmployee.logger getter reads `this.ctx.logger` (not `ctx.log`) on
+    // non-fatal branches such as stream-cache append failure and interrupt
+    // payload warnings; aliasing avoids another `Cannot read properties of
+    // undefined (reading 'warn')` the first time one of those paths fires.
+    logger: log,
     auth: { user, role, roles },
     state: {
       feishuContext,
       currentUser: user,
+      // NocoBase's ACL middleware normally sets these on every HTTP request;
+      // AIEmployee + sub-agent tools (see plugin-ai .../sub-agents/shared.ts)
+      // read them to filter `rolesAiEmployees` etc. Without these, a Sequelize
+      // query like `{ roleName: undefined }` blows up with
+      // "WHERE parameter \"role_name\" has invalid \"undefined\" value".
+      currentRoles: roles,
+      currentRole: role,
     },
     action: {
       params: {

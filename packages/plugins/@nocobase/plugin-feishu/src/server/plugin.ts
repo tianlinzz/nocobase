@@ -172,7 +172,7 @@ export class PluginFeishuServer extends Plugin {
     const messageDedup = new MessageDedup(cacheAdapter);
     const cardActionDedup = new CardActionDedup(cacheAdapter);
     const cardRecordService = new CardRecordService({ db: this.app.db });
-    const conversationManager = new FeishuConversationManager();
+    const conversationManager = new FeishuConversationManager({ db: this.app.db });
     const richLog = {
       info: (msg: string, meta?: Record<string, unknown>): void =>
         meta ? this.app.log.info(msg, meta) : this.app.log.info(msg),
@@ -222,8 +222,16 @@ export class PluginFeishuServer extends Plugin {
         actAsUserId: opts.actAsUserId,
       });
 
+    // Pass the *real* Application — not a `{ db, pm }` projection. AIEmployee
+    // reads several fields off `ctx.app` that only exist on the full instance:
+    //   - `ctx.app.aiManager.toolsManager` (tool listing / interrupt handling)
+    //   - `ctx.app.dataSourceManager.dataSources` (employee data-source prompt)
+    //   - `ctx.app.mainDataSource` (LangGraph checkpointer in createAgent)
+    // A narrowed projection makes those paths throw
+    // "Cannot read properties of undefined (reading 'toolsManager')" the first
+    // time the bridge actually invokes an AI employee.
     const aiBridge = new FeishuAIBridge({
-      app: { db: this.app.db, pm: this.app.pm },
+      app: this.app,
       log: richLog,
       conversationManager,
       contextFactory,

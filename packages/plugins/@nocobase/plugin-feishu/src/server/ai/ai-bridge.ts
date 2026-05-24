@@ -14,8 +14,21 @@ import type { ConversationInfo, FeishuConversationManager } from './conversation
 import type { AIInvokeLogger, BuildAIInvokeContextAppLike } from './ai-context-factory';
 import type { FeishuResponseRenderer } from './response-renderer';
 
+/**
+ * AIEmployee.invoke expects each user message's `content` to be the wrapped
+ * `AIMessageContent` object `{ type, content }` — not a raw string. (See
+ * `plugin-ai/.../types/ai-message.type.ts:30` and the canonical workflow node
+ * usage at `plugin-ai/.../workflow/nodes/employee/index.ts:160`.) Passing a
+ * raw string makes `formatMessages` destructure `let { content } = msg.content`
+ * to `undefined`, so the user input silently drops on the floor.
+ */
+interface AIMessageContentLike {
+  type: 'text';
+  content: string;
+}
+
 interface AIEmployeeLike {
-  invoke: (args: { userMessages: { role: 'user'; content: string }[] }) => Promise<unknown>;
+  invoke: (args: { userMessages: { role: 'user'; content: AIMessageContentLike }[] }) => Promise<unknown>;
 }
 
 export interface ModelRef {
@@ -135,11 +148,22 @@ export class FeishuAIBridge {
         return;
       }
 
+      // Resolves (and persists, on first message) the aiConversations row for
+      // this Feishu chat. The row's UUID sessionId — not the synthesized
+      // `feishu:...` key — is what AIEmployee.getCurrentThread expects to
+      // find via `findByTargetKey`.
+      const employeeUsername =
+        (employee.get?.('username') as string | undefined) ?? (employee as { username?: string }).username;
+      if (!employeeUsername) {
+        throw new Error(`feishu ai bridge: AI employee has no username (lookup=${context.aiConfig.employeeUsername})`);
+      }
       session = await this.deps.conversationManager.getOrCreateSession({
         appId,
         chatId: parsed.chatId,
         chatType: parsed.chatType,
         senderOpenId: parsed.senderOpenId,
+        employee: { username: employeeUsername },
+        userId: context.aiConfig.actAsUserId ?? null,
       });
 
       // Resolve the LLM binding for this employee. Mirrors what
@@ -164,7 +188,9 @@ export class FeishuAIBridge {
         model: resolvedModel,
       });
       const userText = parsed.content.type === 'text' ? parsed.content.text : '';
-      const result = await aiEmployee.invoke({ userMessages: [{ role: 'user', content: userText }] });
+      const result = await aiEmployee.invoke({
+        userMessages: [{ role: 'user', content: { type: 'text', content: userText } }],
+      });
 
       await this.deps.responseRenderer.render({
         parsed: { messageId: parsed.messageId, chatId: parsed.chatId },
@@ -254,9 +280,49 @@ export class FeishuAIBridge {
   }
 }
 
+/**
+ * Extract the assistant's final text from an AIEmployee.invoke return value.
+ *
+ * `aiEmployee.invoke` resolves to the LangGraph compiled-agent state
+ * (`{ messages: BaseMessage[] }`), not a `{ text }` envelope. The conversation
+ * trace contains the user message, any tool-call hops, and finally the
+ * assistant's response — so we walk `messages` from the end and pick the
+ * last `type === 'ai'` message that has non-empty text content.
+ *
+ * `BaseMessage.content` may be a plain string OR an array of content blocks
+ * (Anthropic-style multi-modal); we handle both. The `result.text` shortcut
+ * stays as a fallback for callers that wrap the invoke in a friendlier shape.
+ */
 function getResultText(result: unknown): string | undefined {
   if (!isRecord(result)) return undefined;
-  return typeof result.text === 'string' ? result.text : undefined;
+  if (typeof result.text === 'string' && result.text.length > 0) return result.text;
+
+  const messages = result.messages;
+  if (!Array.isArray(messages)) return undefined;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!isRecord(msg)) continue;
+    if (msg.type !== 'ai') continue;
+
+    const text = stringifyMessageContent(msg.content);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function stringifyMessageContent(content: unknown): string | undefined {
+  if (typeof content === 'string') {
+    return content.length > 0 ? content : undefined;
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .filter((block): block is { type: string; text?: unknown } => isRecord(block) && block.type === 'text')
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('');
+    return text.length > 0 ? text : undefined;
+  }
+  return undefined;
 }
 
 function collectContentChunks(chunk: string, chunks: string[]): void {

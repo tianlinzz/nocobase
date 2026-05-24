@@ -44,7 +44,40 @@ interface AIEmployeeArgs {
   sessionId: string;
 }
 
-function setup(overrides?: { invokeResult?: { text?: string }; invokeError?: Error; employee?: unknown }) {
+/**
+ * Build a tiny in-process `db` good enough for bridge tests:
+ *   - `users.findOne` returns null (no actAsUserId binding by default).
+ *   - `aiConversations.findOne` looks up the in-memory store by topicId.
+ *   - `aiConversations.create` assigns a deterministic fake UUID.
+ * The same store is exposed so tests can assert on what was persisted.
+ */
+function makeFakeDb() {
+  const aiConversationsStore: Array<Record<string, unknown>> = [];
+  let counter = 0;
+  const aiConversationsRepo = {
+    findOne: vi.fn(async ({ filter }: { filter: Record<string, unknown> }) => {
+      const topicId = filter.topicId as string | undefined;
+      const found = aiConversationsStore.find((r) => r.topicId === topicId);
+      if (!found) return null;
+      return { get: (k: string) => found[k] };
+    }),
+    create: vi.fn(async ({ values }: { values: Record<string, unknown> }) => {
+      counter += 1;
+      const row = { ...values, sessionId: `uuid-${counter}` };
+      aiConversationsStore.push(row);
+      return { get: (k: string) => row[k] };
+    }),
+  };
+  const usersRepo = { findOne: vi.fn().mockResolvedValue(null) };
+  const getRepository = vi.fn((name: string) => {
+    if (name === 'aiConversations') return aiConversationsRepo;
+    if (name === 'users') return usersRepo;
+    return { findOne: vi.fn().mockResolvedValue(null) };
+  });
+  return { db: { getRepository }, aiConversationsRepo, aiConversationsStore };
+}
+
+function setup(overrides?: { invokeResult?: unknown; invokeError?: Error; employee?: unknown }) {
   const captured: { args?: AIEmployeeArgs; userMessages?: unknown } = {};
   const invoke = vi.fn().mockImplementation(async ({ userMessages }: { userMessages: unknown }) => {
     captured.userMessages = userMessages;
@@ -76,13 +109,12 @@ function setup(overrides?: { invokeResult?: { text?: string }; invokeError?: Err
     log,
   });
 
+  const { db, aiConversationsRepo, aiConversationsStore } = makeFakeDb();
+
   const bridge = new FeishuAIBridge({
-    app: {
-      db: { getRepository: vi.fn().mockReturnValue({ findOne: vi.fn().mockResolvedValue(null) }) },
-      pm: { get: pmGet },
-    },
+    app: { db, pm: { get: pmGet } },
     log,
-    conversationManager: new FeishuConversationManager(),
+    conversationManager: new FeishuConversationManager({ db }),
     contextFactory: buildAIInvokeContext,
     responseRenderer,
     messageLogService,
@@ -91,7 +123,19 @@ function setup(overrides?: { invokeResult?: { text?: string }; invokeError?: Err
     },
   });
 
-  return { bridge, captured, invoke, MockAIEmployee, pmGet, getEmployee, log, messageLogService, replyMessage };
+  return {
+    bridge,
+    captured,
+    invoke,
+    MockAIEmployee,
+    pmGet,
+    getEmployee,
+    log,
+    messageLogService,
+    replyMessage,
+    aiConversationsRepo,
+    aiConversationsStore,
+  };
 }
 
 describe('FeishuAIBridge', () => {
@@ -125,13 +169,21 @@ describe('FeishuAIBridge', () => {
   });
 
   it('happy path: constructs AIEmployee, invokes, renders reply, records success', async () => {
-    const { bridge, captured, invoke, MockAIEmployee, replyMessage, messageLogService } = setup();
+    const { bridge, captured, invoke, MockAIEmployee, replyMessage, messageLogService, aiConversationsStore } = setup();
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(MockAIEmployee).toHaveBeenCalledTimes(1);
-    expect(captured.args?.sessionId).toBe('feishu:app1:p2p:ou_user');
+    // sessionId is the auto-generated UUID of the freshly-created
+    // aiConversations row, not the synthesized feishu:... key. We assert it
+    // matches what the row received and that the row's topicId carries the
+    // feishu correlator.
+    expect(aiConversationsStore).toHaveLength(1);
+    expect(aiConversationsStore[0].topicId).toBe('feishu:app1:p2p:ou_user:bot');
+    expect(captured.args?.sessionId).toBe(aiConversationsStore[0].sessionId);
     expect(captured.args?.employee).toEqual({ username: 'bot' });
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect(captured.userMessages).toEqual([{ role: 'user', content: 'hello bot' }]);
+    // AIMessageInput.content must be the wrapped `{ type, content }` shape —
+    // a raw string would silently drop in plugin-ai's formatMessages step.
+    expect(captured.userMessages).toEqual([{ role: 'user', content: { type: 'text', content: 'hello bot' } }]);
     expect(replyMessage).toHaveBeenCalledTimes(1);
     expect(replyMessage.mock.calls[0][0]).toMatchObject({
       appId: 'app1',
@@ -144,7 +196,7 @@ describe('FeishuAIBridge', () => {
         appId: 'app1',
         routeAction: 'ai',
         status: 'success',
-        aiSessionId: 'feishu:app1:p2p:ou_user',
+        aiSessionId: aiConversationsStore[0].sessionId,
       }),
     );
   });
@@ -163,20 +215,21 @@ describe('FeishuAIBridge', () => {
       };
     });
     const replyMessage = vi.fn().mockResolvedValue({ messageId: 'om_reply' });
+    const { db } = makeFakeDb();
     const bridge = new FeishuAIBridge({
       app: {
-        db: { getRepository: vi.fn().mockReturnValue({ findOne: vi.fn().mockResolvedValue(null) }) },
+        db,
         pm: {
           get: vi.fn().mockReturnValue({
             aiEmployeesManager: {
-              getEmployee: vi.fn().mockResolvedValue({}),
+              getEmployee: vi.fn().mockResolvedValue({ username: 'bot' }),
               resolveModel: vi.fn().mockResolvedValue({ llmService: 'openai-default', model: 'gpt-4o' }),
             },
           }),
         },
       },
       log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      conversationManager: new FeishuConversationManager(),
+      conversationManager: new FeishuConversationManager({ db }),
       contextFactory: buildAIInvokeContext,
       responseRenderer: new FeishuResponseRenderer({
         clientManager: { sendMessage: vi.fn(), replyMessage },
@@ -215,5 +268,43 @@ describe('FeishuAIBridge', () => {
     await bridge.handleMessage('app1', baseParsed, baseContext);
     const ctx = captured.args?.ctx as { state: { feishuContext: FeishuMessageContext } };
     expect(ctx.state.feishuContext).toBe(baseContext);
+  });
+
+  it('extracts the assistant reply from invoke result.messages when there is no result.text', async () => {
+    // Mirrors the real LangGraph compiled-agent return shape: `{ messages: [...] }`
+    // with the final assistant reply living on the last `type: 'ai'` entry.
+    const { bridge, replyMessage } = setup({
+      invokeResult: {
+        messages: [
+          { type: 'human', content: 'hello bot' },
+          { type: 'ai', content: '', tool_calls: [{ id: 't1', name: 'noop' }] },
+          { type: 'tool', content: 'tool ran ok' },
+          { type: 'ai', content: 'final answer from messages' },
+        ],
+      },
+    });
+    await bridge.handleMessage('app1', baseParsed, baseContext);
+    expect(replyMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ content: { text: 'final answer from messages' } }),
+    );
+  });
+
+  it('handles array-form AI message content (multi-modal text blocks)', async () => {
+    const { bridge, replyMessage } = setup({
+      invokeResult: {
+        messages: [
+          { type: 'human', content: 'hello' },
+          {
+            type: 'ai',
+            content: [
+              { type: 'text', text: 'block one ' },
+              { type: 'text', text: 'block two' },
+            ],
+          },
+        ],
+      },
+    });
+    await bridge.handleMessage('app1', baseParsed, baseContext);
+    expect(replyMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { text: 'block one block two' } }));
   });
 });
