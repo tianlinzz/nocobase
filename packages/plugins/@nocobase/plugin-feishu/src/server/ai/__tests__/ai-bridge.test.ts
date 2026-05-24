@@ -58,7 +58,12 @@ function setup(overrides?: { invokeResult?: { text?: string }; invokeError?: Err
 
   const employee = overrides?.employee === undefined ? { username: 'bot' } : overrides.employee;
   const getEmployee = vi.fn().mockResolvedValue(employee);
-  const aiPlugin = { aiEmployeesManager: { getEmployee } };
+  // The bridge now resolves the LLM binding before constructing AIEmployee
+  // (mirrors plugin-ai/.../resource/aiConversations.ts:368). Provide a stub
+  // that returns a valid {llmService, model} so tests don't need to mock
+  // employee.modelSettings.
+  const resolveModel = vi.fn().mockResolvedValue({ llmService: 'openai-default', model: 'gpt-4o' });
+  const aiPlugin = { aiEmployeesManager: { getEmployee, resolveModel } };
   const pmGet = vi.fn().mockReturnValue(aiPlugin);
 
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -161,7 +166,14 @@ describe('FeishuAIBridge', () => {
     const bridge = new FeishuAIBridge({
       app: {
         db: { getRepository: vi.fn().mockReturnValue({ findOne: vi.fn().mockResolvedValue(null) }) },
-        pm: { get: vi.fn().mockReturnValue({ aiEmployeesManager: { getEmployee: vi.fn().mockResolvedValue({}) } }) },
+        pm: {
+          get: vi.fn().mockReturnValue({
+            aiEmployeesManager: {
+              getEmployee: vi.fn().mockResolvedValue({}),
+              resolveModel: vi.fn().mockResolvedValue({ llmService: 'openai-default', model: 'gpt-4o' }),
+            },
+          }),
+        },
       },
       log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       conversationManager: new FeishuConversationManager(),

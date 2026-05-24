@@ -18,12 +18,31 @@ interface AIEmployeeLike {
   invoke: (args: { userMessages: { role: 'user'; content: string }[] }) => Promise<unknown>;
 }
 
+export interface ModelRef {
+  llmService: string;
+  model: string;
+}
+
 export interface AIEmployeeConstructor {
-  new (args: { ctx: Context; employee: Model; sessionId: string }): AIEmployeeLike;
+  new (args: {
+    ctx: Context;
+    employee: Model;
+    sessionId: string;
+    /**
+     * The LLM binding for this conversation. AIEmployee.buildChatContext reads
+     * `this.model` and forwards it to AIManager.getLLMService — passing
+     * undefined makes the AI plugin throw "LLM service not configured", so
+     * we always resolve a model from the employee row before constructing.
+     */
+    model?: ModelRef;
+  }): AIEmployeeLike;
 }
 
 interface AIPluginShape {
-  aiEmployeesManager?: { getEmployee: (username: string) => Promise<Model | null> };
+  aiEmployeesManager?: {
+    getEmployee?: (username: string) => Promise<Model | null>;
+    resolveModel?: (employee: Model, model?: ModelRef | null) => Promise<ModelRef>;
+  };
   aiEmployees?: { findOne?: (args: { filter: { username: string } }) => Promise<Model | null> };
 }
 
@@ -123,6 +142,12 @@ export class FeishuAIBridge {
         senderOpenId: parsed.senderOpenId,
       });
 
+      // Resolve the LLM binding for this employee. Mirrors what
+      // plugin-ai/.../resource/aiConversations.ts:368 does for the regular
+      // chat surface — without this, AIEmployee.buildChatContext sees
+      // `this.model = undefined` and throws "LLM service not configured".
+      const resolvedModel = await this.resolveModel(employee);
+
       const textChunks: string[] = [];
       const ctx = await this.deps.contextFactory({
         app: this.deps.app,
@@ -132,7 +157,12 @@ export class FeishuAIBridge {
         streamWriter: (chunk) => collectContentChunks(chunk, textChunks),
       });
 
-      const aiEmployee = new this.deps.AIEmployee({ ctx, employee, sessionId: session.sessionId });
+      const aiEmployee = new this.deps.AIEmployee({
+        ctx,
+        employee,
+        sessionId: session.sessionId,
+        model: resolvedModel,
+      });
       const userText = parsed.content.type === 'text' ? parsed.content.text : '';
       const result = await aiEmployee.invoke({ userMessages: [{ role: 'user', content: userText }] });
 
@@ -186,6 +216,41 @@ export class FeishuAIBridge {
       return aiPlugin.aiEmployees.findOne({ filter: { username } });
     }
     return null;
+  }
+
+  /**
+   * Resolve the LLM binding for an AI employee, with safe fallbacks:
+   *   1. Prefer plugin-ai's own resolver — picks the first configured model
+   *      under the employee's modelSettings, or the workspace default.
+   *   2. If the resolver isn't exposed (older plugin-ai or alternative shape),
+   *      read employee.modelSettings directly.
+   *   3. If still no binding, throw a clear error so the operator sees
+   *      "AI employee model not configured" instead of a generic SDK error.
+   */
+  private async resolveModel(employee: Model): Promise<ModelRef> {
+    const aiPlugin = this.deps.app.pm.get('ai') as AIPluginShape | null | undefined;
+    if (aiPlugin?.aiEmployeesManager?.resolveModel) {
+      return aiPlugin.aiEmployeesManager.resolveModel(employee, null);
+    }
+    const settings = (employee.get?.('modelSettings') ??
+      (employee as unknown as { modelSettings?: unknown }).modelSettings) as
+      | {
+          enabled?: boolean;
+          llmService?: string;
+          model?: string;
+          models?: Array<{ llmService?: string; model?: string }>;
+        }
+      | undefined;
+    if (settings?.enabled) {
+      const fromList = (settings.models ?? []).find((m) => m?.llmService && m?.model);
+      if (fromList?.llmService && fromList.model) {
+        return { llmService: fromList.llmService, model: fromList.model };
+      }
+      if (settings.llmService && settings.model) {
+        return { llmService: settings.llmService, model: settings.model };
+      }
+    }
+    throw new Error('AI employee model not configured (set llmService + model in the AI Employees settings page)');
   }
 }
 
