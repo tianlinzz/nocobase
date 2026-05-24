@@ -213,4 +213,57 @@ describe('parseMessageEvent', () => {
     const result = parseMessageEvent(raw, { botOpenId: BOT_OPEN_ID });
     expect(result!.rootMessageId).toBe('om_root_1');
   });
+
+  // The Lark SDK's WebSocket EventDispatcher hands handlers the inner event
+  // directly (`{ message, sender, ... }`), without the outer `header` / `event`
+  // envelope that HTTP webhook callbacks include. The parser must accept both.
+  describe('inner-event shape (WS dispatcher)', () => {
+    it('parses a text message delivered without an envelope', () => {
+      const inner = {
+        message: {
+          message_id: 'om_msg_inner',
+          create_time: '1700000000000',
+          chat_id: 'oc_inner_chat',
+          chat_type: 'p2p',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'hi from ws' }),
+          mentions: [],
+        },
+        sender: {
+          sender_id: { open_id: 'ou_user_inner', union_id: 'on_y', user_id: 'u_y' },
+          sender_type: 'user',
+          tenant_key: 't1',
+        },
+      };
+      const result = parseMessageEvent(inner, { botOpenId: BOT_OPEN_ID });
+      expect(result).not.toBeNull();
+      expect(result!.contentType).toBe('text');
+      expect(result!.content).toEqual({ type: 'text', text: 'hi from ws' });
+      expect(result!.messageId).toBe('om_msg_inner');
+      expect(result!.chatId).toBe('oc_inner_chat');
+      // Without a header.event_id, eventId falls back to message_id so dedup
+      // and message-log indexes still work.
+      expect(result!.eventId).toBe('om_msg_inner');
+      expect(result!.senderOpenId).toBe('ou_user_inner');
+    });
+
+    it('treats group chat without bot mention the same as the envelope path', () => {
+      const inner = {
+        message: {
+          message_id: 'om_grp_inner',
+          create_time: '1700000000000',
+          chat_id: 'oc_group',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'noise' }),
+          mentions: [],
+        },
+        sender: { sender_id: { open_id: 'ou_grp_user' }, sender_type: 'user' },
+      };
+      const result = parseMessageEvent(inner, { botOpenId: BOT_OPEN_ID });
+      expect(result).not.toBeNull();
+      expect(result!.chatType).toBe('group');
+      expect(result!.isMentionBot).toBe(false);
+    });
+  });
 });

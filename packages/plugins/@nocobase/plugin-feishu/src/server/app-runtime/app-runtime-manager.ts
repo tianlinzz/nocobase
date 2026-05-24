@@ -66,6 +66,13 @@ export class FeishuAppRuntimeManager {
 
   async startActiveApps(): Promise<void> {
     const rows = await this.deps.loadActiveAppRows();
+    this.deps.log.info(`feishu.runtime.startActiveApps count=${rows.length}`);
+    if (rows.length === 0) {
+      this.deps.log.warn(
+        'feishu.runtime.no-active-apps — nothing to connect. Configure an app at /v2/admin/settings/feishu and ensure status="active".',
+      );
+      return;
+    }
     for (const row of rows) {
       try {
         await this.start(row.app_id);

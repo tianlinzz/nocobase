@@ -261,55 +261,76 @@ export class PluginFeishuServer extends Plugin {
       logger: { error: (msg, meta) => log.error(`${msg} ${meta ? JSON.stringify(meta) : ''}`) },
     });
 
-    const wsManager = new FeishuWebSocketManager({
-      onMessage: async (appId, event) => {
-        try {
-          const ev = event as RawMessageEvent;
-          const eventId = ev?.header?.event_id ?? ev?.event_id;
-          if (eventId) {
-            const fresh = await messageDedup.tryRecord(appId, String(eventId));
-            if (!fresh) return;
+    const wsManager = new FeishuWebSocketManager(
+      {
+        onMessage: async (appId, event) => {
+          try {
+            const ev = event as RawMessageEvent;
+            // The Lark SDK EventDispatcher hands handlers the inner event
+            // (`{ message, sender, ... }`); the HTTP webhook adds an outer
+            // envelope (`{ header, event: { message, sender } }`). Support both.
+            const inner = ev?.event ?? ev;
+            const messageId = inner?.message?.message_id;
+            const eventId = ev?.header?.event_id ?? ev?.event_id ?? messageId ?? '';
+            this.app.log.info(
+              `feishu.ws.message.received app=${appId} message_id=${messageId ?? ''} event_id=${eventId}`,
+            );
+            if (eventId) {
+              const fresh = await messageDedup.tryRecord(appId, String(eventId));
+              if (!fresh) {
+                this.app.log.info(`feishu.ws.message.deduped app=${appId} event_id=${eventId}`);
+                return;
+              }
+            }
+            await messageQueue.enqueue(appId, event);
+          } catch (err) {
+            log.warn(`feishu.ws.onMessage.error ${(err as Error).message}`);
           }
-          await messageQueue.enqueue(appId, event);
-        } catch (err) {
-          log.warn(`feishu.ws.onMessage.error ${(err as Error).message}`);
-        }
+        },
+        onCardAction: async (appId, event) => {
+          const ev = event as CardTriggerEvent;
+          const inner = ev?.event ?? ev;
+          try {
+            this.app.log.info(`feishu.ws.card.received app=${appId}`);
+            const messageId = inner?.context?.open_message_id ?? inner?.message_id;
+            const route = await cardActionRouter.route({
+              appId,
+              eventId: ev?.header?.event_id ?? ev?.event_id ?? messageId ?? '',
+              messageId,
+              openMessageId: inner?.context?.open_message_id,
+              actionKey: inner?.action?.value?.action_key ?? '',
+              values: inner?.action?.value ?? {},
+              senderOpenId: inner?.operator?.open_id ?? '',
+              chatId: inner?.context?.open_chat_id ?? '',
+              chatType: 'p2p',
+            });
+            return await cardActionHandler.dispatch(route, {
+              appId,
+              eventId: ev?.header?.event_id ?? messageId ?? '',
+              messageId: messageId ?? '',
+              actionKey: inner?.action?.value?.action_key ?? '',
+              actionValues: inner?.action?.value ?? {},
+              executorOpenId: inner?.operator?.open_id ?? '',
+            });
+          } catch (err) {
+            log.error(`feishu.card.action.error ${(err as Error).message}`);
+            return { toast: { type: 'error', content: 'Card action failed' } };
+          }
+        },
       },
-      onCardAction: async (appId, event) => {
-        const ev = event as CardTriggerEvent;
-        try {
-          const route = await cardActionRouter.route({
-            appId,
-            eventId: ev?.header?.event_id ?? ev?.event_id ?? '',
-            messageId: ev?.event?.context?.open_message_id ?? ev?.event?.message_id,
-            openMessageId: ev?.event?.context?.open_message_id,
-            actionKey: ev?.event?.action?.value?.action_key ?? '',
-            values: ev?.event?.action?.value ?? {},
-            senderOpenId: ev?.event?.operator?.open_id ?? '',
-            chatId: ev?.event?.context?.open_chat_id ?? '',
-            chatType: 'p2p',
-          });
-          return await cardActionHandler.dispatch(route, {
-            appId,
-            eventId: ev?.header?.event_id ?? '',
-            messageId: ev?.event?.context?.open_message_id ?? '',
-            actionKey: ev?.event?.action?.value?.action_key ?? '',
-            actionValues: ev?.event?.action?.value ?? {},
-            executorOpenId: ev?.event?.operator?.open_id ?? '',
-          });
-        } catch (err) {
-          log.error(`feishu.card.action.error ${(err as Error).message}`);
-          return { toast: { type: 'error', content: 'Card action failed' } };
-        }
-      },
-    });
+      log,
+    );
 
     messageQueue.consume(async (appId, rawEvent) => {
+      this.app.log.info(`feishu.queue.consume.start app=${appId}`);
       const repo = this.app.db.getRepository(COLLECTION.apps);
       const appRow = await repo.findOne({ filter: { app_id: appId } });
       const botOpenId = appRow?.get?.('bot_open_id') as string | undefined;
       const parsed = parseMessageEvent(rawEvent, { botOpenId });
       if (!parsed) {
+        this.app.log.warn(
+          `feishu.queue.parse.failed app=${appId} (raw event shape was not recognised — see message-parser logs)`,
+        );
         await messageLogService.record({
           appId,
           eventId: '',
@@ -324,6 +345,11 @@ export class PluginFeishuServer extends Plugin {
       }
       const context = await buildFeishuMessageContext({ db: this.app.db }, { appId, parsed });
       const decision = routeMessage(parsed, context);
+      this.app.log.info(
+        `feishu.queue.routed app=${appId} message_id=${parsed.messageId} chat_type=${parsed.chatType} decision=${
+          decision.action
+        }${decision.action === 'ignore' ? ` reason=${decision.reason}` : ''}`,
+      );
       if (decision.action === 'ai' && context) {
         await aiBridge.handleMessage(appId, parsed, context);
       } else {

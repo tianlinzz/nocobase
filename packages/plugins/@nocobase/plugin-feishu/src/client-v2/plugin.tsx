@@ -8,33 +8,35 @@
  */
 
 import { Plugin, Application } from '@nocobase/client-v2';
-import { tExpr } from './locale';
+import { NAMESPACE } from './locale';
 
 export class PluginFeishuClientV2 extends Plugin<Record<string, never>, Application> {
   async load() {
+    const t = (key: string) => this.app.i18n.t(key, { ns: NAMESPACE }) as unknown as string;
+
     this.pluginSettingsManager.addMenuItem({
       key: 'feishu',
-      title: tExpr('Feishu') as unknown as string,
+      title: t('Feishu'),
       icon: 'MessageOutlined',
       aclSnippet: 'pm.feishu.settings',
     });
     this.pluginSettingsManager.addPageTabItem({
       menuKey: 'feishu',
       key: 'index',
-      title: tExpr('Apps') as unknown as string,
+      title: t('Apps'),
       componentLoader: () => import('./pages/FeishuAppsPage'),
       sort: -1,
     });
     this.pluginSettingsManager.addPageTabItem({
       menuKey: 'feishu',
       key: 'card-records',
-      title: tExpr('Card records') as unknown as string,
+      title: t('Card records'),
       componentLoader: () => import('./pages/FeishuCardRecordsPage'),
     });
     this.pluginSettingsManager.addPageTabItem({
       menuKey: 'feishu',
       key: 'diagnostics',
-      title: tExpr('Diagnostics') as unknown as string,
+      title: t('Diagnostics'),
       componentLoader: () => import('./pages/FeishuDiagnosticsPage'),
     });
   }

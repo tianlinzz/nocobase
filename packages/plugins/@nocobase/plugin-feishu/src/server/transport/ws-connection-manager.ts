@@ -21,16 +21,30 @@ export interface WSEventHandlers {
   onCardAction(appId: string, event: unknown): Promise<unknown>;
 }
 
+export interface WSLogger {
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+}
+
 interface Entry {
   config: FeishuAppConfig;
   client?: Lark.WSClient;
   running: boolean;
 }
 
+const NOOP_LOGGER: WSLogger = { info: () => undefined, warn: () => undefined, error: () => undefined };
+
 export class FeishuWebSocketManager {
   private entries = new Map<string, Entry>();
+  private logger: WSLogger;
 
-  constructor(private handlers: WSEventHandlers) {}
+  constructor(
+    private handlers: WSEventHandlers,
+    logger: WSLogger = NOOP_LOGGER,
+  ) {
+    this.logger = logger;
+  }
 
   addConnection(config: FeishuAppConfig): void {
     this.entries.set(config.appId, { config, running: false });
@@ -54,13 +68,19 @@ export class FeishuWebSocketManager {
       throw new Error(`ws connection not registered: ${appId}`);
     }
     if (entry.running) {
+      this.logger.info(`feishu.ws.start.skip already-running app=${appId}`);
       return;
     }
+    this.logger.info(`feishu.ws.start app=${appId}`);
     const client = new Lark.WSClient({
       appId: entry.config.appId,
       appSecret: entry.config.appSecret,
       domain: Lark.Domain.Feishu,
       loggerLevel: Lark.LoggerLevel.warn,
+      // The Lark SDK's `WSClient` defaults to `autoReconnect: true` already, but
+      // we set it explicitly so the behaviour stays stable across SDK upgrades
+      // (and so future readers see the contract).
+      autoReconnect: true,
     });
     const eventDispatcher = new Lark.EventDispatcher({
       encryptKey: entry.config.encryptKey,
@@ -77,6 +97,7 @@ export class FeishuWebSocketManager {
     client.start({ eventDispatcher });
     entry.client = client;
     entry.running = true;
+    this.logger.info(`feishu.ws.started app=${appId}`);
   }
 
   async stopConnection(appId: string): Promise<void> {

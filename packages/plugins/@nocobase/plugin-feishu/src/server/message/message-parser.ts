@@ -19,12 +19,31 @@ const SUPPORTED_TYPES = new Set<ParsedContent['type']>([
   'share_user',
 ]);
 
-interface RawEvent {
-  event?: {
-    message?: Record<string, unknown>;
-    sender?: Record<string, unknown>;
-  };
-  header?: Record<string, unknown>;
+/**
+ * Two real-world shapes feed parseMessageEvent:
+ *
+ *  1. Webhook envelope (open.feishu.cn HTTP push):
+ *     `{ schema, header: { event_id, ... }, event: { message, sender } }`
+ *  2. WebSocket dispatcher inner event (Lark SDK `EventDispatcher`):
+ *     `{ message, sender, schema, ... }` — no outer `header` / `event` wrapper.
+ *
+ * We accept both. The unwrapped result is always `{ event, header? }` so the
+ * downstream parser can stay shape-agnostic.
+ */
+type RawEvent = Record<string, unknown>;
+
+function unwrapEvent(raw: RawEvent): { event: Record<string, unknown>; header?: Record<string, unknown> } | null {
+  const enveloped = raw.event;
+  if (isObject(enveloped) && isObject(enveloped.message)) {
+    return {
+      event: enveloped,
+      header: isObject(raw.header) ? raw.header : undefined,
+    };
+  }
+  if (isObject(raw.message)) {
+    return { event: raw, header: isObject(raw.header) ? raw.header : undefined };
+  }
+  return null;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -120,13 +139,15 @@ function parseCreateTime(value: unknown): number {
 
 export function parseMessageEvent(rawEvent: unknown, opts: { botOpenId: string | undefined }): ParsedMessage | null {
   if (!isObject(rawEvent)) return null;
-  const envelope = rawEvent as RawEvent;
-  const event = envelope.event;
-  if (!isObject(event) || !isObject(event.message)) return null;
+  const unwrapped = unwrapEvent(rawEvent as RawEvent);
+  if (!unwrapped) return null;
+  const event = unwrapped.event;
+  const messageRaw = event.message;
+  if (!isObject(messageRaw)) return null;
 
-  const message = event.message;
+  const message = messageRaw;
   const sender = isObject(event.sender) ? event.sender : {};
-  const header = isObject(envelope.header) ? envelope.header : {};
+  const header = unwrapped.header ?? {};
 
   const messageType = typeof message.message_type === 'string' ? message.message_type : '';
   if (!SUPPORTED_TYPES.has(messageType as ParsedContent['type'])) return null;
@@ -146,8 +167,12 @@ export function parseMessageEvent(rawEvent: unknown, opts: { botOpenId: string |
   const mentionsBot = !!opts.botOpenId && mentions.some((m) => m.id.open_id === opts.botOpenId);
   const isMentionBot = chatType === 'p2p' || mentionsBot;
 
+  // Inner-event payloads (WS dispatcher) lose the envelope's `event_id`.
+  // Fall back to `message_id` so downstream dedup/log keys remain stable.
+  const eventId = asString(header.event_id) || asString(message.message_id) || '';
+
   return {
-    eventId: asString(header.event_id) || '',
+    eventId,
     messageId: asString(message.message_id) || '',
     chatId,
     chatType,
