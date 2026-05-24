@@ -10,15 +10,22 @@
 import { Plugin } from '@nocobase/server';
 
 export class PluginFeishuServer extends Plugin {
-  async afterAdd() {}
-
-  async beforeLoad() {}
+  async beforeLoad() {
+    this.app.acl.registerSnippet({
+      name: 'pm.feishu.settings',
+      actions: [
+        'feishu_apps:*',
+        'feishuMessages:send',
+        'feishuMessages:reply',
+        'feishu_message_logs:list',
+        'feishu_card_records:list',
+        'feishu_card_action_logs:list',
+        'feishuDiagnostics:*',
+      ],
+    });
+  }
 
   async load() {}
-
-  async install() {}
-
-  async afterEnable() {}
 
   async afterDisable() {}
 
