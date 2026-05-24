@@ -7,8 +7,6 @@
  * For more information, please refer to: https://www.nocobase.com/agreement.
  */
 
-import axios from 'axios';
-import https from 'node:https';
 import * as Lark from '@larksuiteoapi/node-sdk';
 import {
   extractRequestId,
@@ -25,32 +23,6 @@ import {
 const stringifyContent = (content: unknown): string =>
   typeof content === 'string' ? content : JSON.stringify(content);
 
-/**
- * Build an axios instance that bypasses any HTTP(S)_PROXY environment
- * variable. The Lark SDK's WebSocket transport (wss://) ignores HTTP proxies
- * anyway, so when a developer machine has a local proxy on 127.0.0.1 (Charles,
- * Fiddler, Clash, V2Ray, …) the WS handshake reaches Feishu directly while
- * every HTTP API call gets intercepted and returns 400 ('app_id or app_secret
- * is invalid' on the WS, 400 on /open-apis/bot/v3/info, etc.).
- *
- * Forcing direct egress for the SDK keeps both transports symmetric: if the
- * machine can WS-connect to open.feishu.cn, it can also HTTP-connect.
- *
- * Operators who genuinely need to route Feishu API traffic through a corporate
- * proxy can set FEISHU_RESPECT_PROXY=true to fall back to the SDK's default
- * (proxy-aware) axios instance.
- */
-const buildLarkHttpInstance = (): import('axios').AxiosInstance | undefined => {
-  if (process.env.FEISHU_RESPECT_PROXY === 'true') return undefined;
-  return axios.create({
-    // disable axios' built-in proxy handling
-    proxy: false,
-    // use a fresh https Agent that does NOT honour HTTPS_PROXY env var
-    httpsAgent: new https.Agent({ keepAlive: true }),
-    timeout: 30_000,
-  });
-};
-
 export class FeishuClientManager {
   private clients = new Map<string, Lark.Client>();
 
@@ -58,14 +30,12 @@ export class FeishuClientManager {
     if (!config.appId || !config.appSecret) {
       throw new Error('feishu app config requires appId and appSecret');
     }
-    const httpInstance = buildLarkHttpInstance();
     const client = new Lark.Client({
       appId: config.appId,
       appSecret: config.appSecret,
       appType: Lark.AppType.SelfBuild,
       domain: Lark.Domain.Feishu,
       loggerLevel: Lark.LoggerLevel.warn,
-      ...(httpInstance ? { httpInstance } : {}),
     });
     this.clients.set(config.appId, client);
   }
