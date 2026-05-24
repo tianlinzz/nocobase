@@ -563,10 +563,12 @@ class FeishuAIBridge {
 
 1. 查询 AI Employee，使用 `employeeUsername` 而不是显示名。
 2. 获取 session。
-3. 构造 AIEmployee。
-4. 调用 `aiEmployee.invoke({ userMessages, writer })`；飞书上下文已经挂在该次调用使用的 `ctx` 上。
-5. 根据 invoke/stream 结果通过 `response-renderer` 回复飞书。
-6. 所有异常写入 `feishu_message_logs`。
+3. 用 `ai-context-factory` 构造本次调用使用的 NocoBase `ctx`，其中包含 `ctx.app`、`ctx.db`、`ctx.log`、可选 `ctx.auth.user` / `ctx.state.currentUser`，以及 `ctx.state.feishuContext`。
+4. 构造 `AIEmployee({ ctx, employee, sessionId, ... })`。
+5. 调用 `aiEmployee.invoke({ userMessages, writer })`；飞书上下文已经挂在该次调用使用的 `ctx` 上。
+6. 从 writer 收集的 AI 输出或 invoke 返回的 `messageId` 对应的 `aiMessages` 记录中解析最终回复。
+7. 根据解析出的回复类型通过 `response-renderer` 回复飞书。
+8. 所有异常写入 `feishu_message_logs`。
 
 #### `ai/response-renderer.ts`
 
@@ -578,6 +580,27 @@ class FeishuAIBridge {
 | 流式输出 | 后续迭代；首期不承诺 |
 
 首期不要在文档中承诺完整流式卡片，避免实现范围失控。
+
+#### 回复提取策略
+
+NocoBase 内部 AI Employee 的主要输出面向 Chat/SSE 协议，不是飞书消息协议。飞书桥接层需要做一层协议适配：
+
+```text
+AIEmployee.invoke()
+  -> writer 收集 content/tool 状态/消息事件
+  -> 或根据 invokeResult.messageId 回读 aiMessages
+  -> normalize 为 FeishuAIReply
+  -> response-renderer 发送到飞书
+```
+
+首期采用非流式回复：
+
+- `writer` 只累计最终可见文本内容，忽略 reasoning、tool status 等 UI 事件。
+- 如果 `invoke()` 返回 `messageId`，优先回读 `aiMessages` 里的最终 AI 文本，作为 writer 为空时的兜底。
+- 没有可见文本时，记录 `empty_success`，不向飞书发送空消息。
+- tool 调用结果只进入 AI 上下文，不直接透传给飞书用户，除非模型最终回复中引用。
+
+后续流式回复再把 `ChatStreamProtocol` 的 `content` 事件映射为飞书卡片 patch。首期不做，是为了避免在 WS 消息处理链路里同时引入飞书卡片流式更新、AI SSE 协议和消息幂等三套状态机。
 
 ### 6. AI tools & skills
 
