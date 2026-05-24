@@ -137,24 +137,32 @@ export class FeishuClientManager {
   }
 
   /**
-   * Validate the configured credentials for an app.
+   * Fetch real bot identity (`bot.open_id`, `bot.app_name`) so the UI can
+   * render which robot we are bound to and prove the credentials are actually
+   * valid. The Lark Node SDK does not expose a stable wrapper for the
+   * `/open-apis/bot/v3/info` endpoint, so we call `client.request` directly.
    *
-   * Phase 2 only verifies that the app credentials can mint an access token; the
-   * `botName` / `botOpenId` fields on `FeishuBotInfo` are intentionally left
-   * unpopulated until a follow-up task wires `application.application.get`.
+   * Note: the SDK's default response interceptor returns `resp.data`, meaning
+   * the body we receive is already the Feishu envelope `{ code, msg, data }`
+   * — do not unwrap it again.
    */
   async getBotInfo(appId: string): Promise<FeishuBotInfo> {
     const client = this.requireClient(appId);
-    const tokenResp = await client.auth.appAccessToken.internal({
-      data: {},
-    });
-    if (tokenResp.code !== 0) {
-      throw new FeishuApiError(
-        `feishu getBotInfo failed: ${tokenResp.msg ?? 'unknown'}`,
-        tokenResp.code ?? -1,
-        (tokenResp as { requestId?: string }).requestId,
-      );
+    const body = (await client.request({
+      method: 'GET',
+      url: '/open-apis/bot/v3/info',
+    })) as { code?: number; msg?: string; data?: Record<string, unknown>; bot?: Record<string, unknown> };
+    const code = body?.code ?? -1;
+    if (code !== 0) {
+      throw new FeishuApiError(`feishu getBotInfo failed: ${body?.msg ?? 'unknown'}`, code, extractRequestId(body));
     }
-    return { appId };
+    // Feishu has shipped two payload shapes over time: `{ data: { bot: {...} } }`
+    // and a flatter `{ bot: {...} }`. Tolerate both.
+    const data = body.data && typeof body.data === 'object' ? body.data : body;
+    const botRaw = (data as Record<string, unknown>).bot ?? data;
+    const bot = botRaw && typeof botRaw === 'object' ? (botRaw as Record<string, unknown>) : {};
+    const botOpenId = typeof bot.open_id === 'string' ? bot.open_id : undefined;
+    const botName = typeof bot.app_name === 'string' ? bot.app_name : undefined;
+    return { appId, botOpenId, botName };
   }
 }

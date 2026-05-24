@@ -20,11 +20,15 @@ export default defineCollection({
   updatedAt: true,
   fields: [
     { type: 'string', name: 'app_id', unique: true, allowNull: false },
-    { type: 'password', name: 'app_secret', allowNull: false },
+    // Secrets are stored as AES-encrypted strings (see plugin.ts beforeSave
+    // hook). Do NOT use the `password` field type — that one is scrypt-hashed
+    // and the original value cannot be recovered, which is incompatible with
+    // an outbound credential we need to hand back to the Lark SDK.
+    { type: 'text', name: 'app_secret', allowNull: false },
     { type: 'string', name: 'name' },
     { type: 'string', name: 'status', defaultValue: 'active' },
-    { type: 'password', name: 'encrypt_key' },
-    { type: 'password', name: 'verification_token' },
+    { type: 'text', name: 'encrypt_key' },
+    { type: 'text', name: 'verification_token' },
     { type: 'string', name: 'bot_open_id' },
     { type: 'string', name: 'bot_name' },
     { type: 'string', name: 'ai_employee_username' },

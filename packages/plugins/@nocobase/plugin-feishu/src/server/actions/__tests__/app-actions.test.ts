@@ -41,10 +41,17 @@ function captureActions(): {
   };
 }
 
-const buildCtx = (params: Record<string, unknown> = {}, repo?: { findOne: ReturnType<typeof vi.fn> }) => {
+const buildCtx = (
+  params: Record<string, unknown> = {},
+  repo?: { findOne: ReturnType<typeof vi.fn>; update?: ReturnType<typeof vi.fn> },
+) => {
+  // testConnection now writes back bot info / last_error, so the mocked repo
+  // needs an `update` method too. Default to a no-op vi.fn() so existing
+  // assertions stay focused on findOne behaviour.
+  const repoWithUpdate = repo ? { update: vi.fn().mockResolvedValue(undefined), ...repo } : undefined;
   const ctx: Record<string, unknown> = {
     action: { params },
-    db: repo ? { getRepository: vi.fn().mockReturnValue(repo) } : undefined,
+    db: repoWithUpdate ? { getRepository: vi.fn().mockReturnValue(repoWithUpdate) } : undefined,
     body: undefined,
     status: 200,
   };
@@ -71,7 +78,9 @@ describe('feishuApps actions', () => {
     const ctx = buildCtx({ values: { appId: 'a1' } }, repo);
     await actions.testConnection?.(ctx, async () => undefined);
     expect(validate).toHaveBeenCalledWith({ appId: 'a1', appSecret: 'sec' });
-    expect(ctx.body).toEqual({ ok: true, requestId: 'rid-1' });
+    // Without a clientManager dep wired, bot info stays undefined but ok=true.
+    // The repo.update call writes back last_connected_at + clears last_error.
+    expect(ctx.body).toMatchObject({ ok: true });
   });
 
   it('testConnection: row missing returns 404 + ok:false and never includes secret', async () => {

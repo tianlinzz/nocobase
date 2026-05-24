@@ -12,11 +12,17 @@ import type { Application } from '@nocobase/server';
 import { COLLECTION } from '../constants';
 import type { FeishuAppRuntimeManager } from '../app-runtime/app-runtime-manager';
 import type { SecretService } from '../app-runtime/secret-service';
+import type { FeishuClientManager } from '../transport/feishu-client-manager';
 import { FeishuApiError } from '../transport/types';
 
 export interface AppActionsDeps {
   runtimeManager: Pick<FeishuAppRuntimeManager, 'start' | 'stop' | 'reload' | 'getOverview'>;
   secretService: Pick<SecretService, 'validate'>;
+  // Optional dep so existing tests that don't need bot lookup keep working.
+  clientManager?: Pick<FeishuClientManager, 'addApp' | 'removeApp' | 'getBotInfo'>;
+  // Decryptor for stored secrets (AES). When omitted, falls back to the raw
+  // string — keeps legacy tests passing without needing the encryptor wired.
+  decryptSecret?: (value: unknown) => Promise<string | undefined>;
   log: { warn: (msg: string) => void };
 }
 
@@ -50,7 +56,8 @@ export function registerAppActions(app: Application, deps: AppActionsDeps): void
           await next();
           return;
         }
-        const row = await ctx.db.getRepository(COLLECTION.apps).findOne({ filter: { app_id: appId } });
+        const repo = ctx.db.getRepository(COLLECTION.apps);
+        const row = await repo.findOne({ filter: { app_id: appId } });
         const json = row?.toJSON?.() as AppRowLike | undefined;
         if (!json) {
           ctx.status = 404;
@@ -58,15 +65,60 @@ export function registerAppActions(app: Application, deps: AppActionsDeps): void
           await next();
           return;
         }
+        // Decrypt stored secret before handing to the SDK.
+        const plainSecret = deps.decryptSecret ? await deps.decryptSecret(json.app_secret) : json.app_secret;
+        if (!plainSecret) {
+          ctx.body = {
+            ok: false,
+            code: 'invalid_secret',
+            message: 'app_secret is empty or could not be decrypted — please re-enter the App Secret in the form',
+          };
+          await next();
+          return;
+        }
         try {
-          const result = await deps.secretService.validate({ appId: json.app_id, appSecret: json.app_secret });
-          ctx.body = { ok: true, requestId: result.requestId };
+          await deps.secretService.validate({ appId: json.app_id, appSecret: plainSecret });
+          // Validate succeeded — pull real bot identity (open_id, app_name) so
+          // the UI can show the bound bot, and persist `last_connected_at` /
+          // `last_error = null`. If the clientManager dep is not wired we skip
+          // bot info gracefully (test environments).
+          let botOpenId: string | undefined;
+          let botName: string | undefined;
+          if (deps.clientManager) {
+            const probeAppId = `__probe__${json.app_id}__${Date.now()}`;
+            try {
+              deps.clientManager.addApp({ appId: probeAppId, appSecret: plainSecret });
+              const info = await deps.clientManager.getBotInfo(probeAppId);
+              botOpenId = info.botOpenId;
+              botName = info.botName;
+            } finally {
+              deps.clientManager.removeApp(probeAppId);
+            }
+          }
+          await repo.update({
+            filter: { app_id: appId },
+            values: {
+              bot_open_id: botOpenId ?? json.app_id,
+              bot_name: botName ?? null,
+              last_connected_at: new Date(),
+              last_error: null,
+            },
+          });
+          ctx.body = { ok: true, botOpenId, botName };
         } catch (err) {
           if (err instanceof FeishuApiError) {
+            // Persist the error so the operator can see it on the apps page.
+            await repo
+              .update({
+                filter: { app_id: appId },
+                values: { last_error: `[${err.code}] ${err.message}` },
+              })
+              .catch(() => undefined);
             ctx.body = { ok: false, code: err.code, message: err.message, requestId: err.requestId };
           } else {
             const message = err instanceof Error ? err.message : String(err);
             deps.log.warn(`feishu.app.testConnection.error ${appId} ${message}`);
+            await repo.update({ filter: { app_id: appId }, values: { last_error: message } }).catch(() => undefined);
             ctx.body = { ok: false, code: 'unknown', message };
           }
         }
