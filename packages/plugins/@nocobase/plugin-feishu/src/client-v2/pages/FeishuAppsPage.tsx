@@ -26,7 +26,6 @@ import {
   Flex,
   Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -94,6 +93,65 @@ const FeishuAppsPage: React.FC = () => {
     return response?.data ?? { data: [] };
   });
 
+  // Lazy-load AI Employee + User options the first time the modal opens, so
+  // we don't pay the request cost when the operator just browses the table.
+  const aiEmployeeRequest = useRequest(
+    async (): Promise<{ data: Array<{ username: string; nickname?: string; position?: string }> }> => {
+      const response = await ctx.api.request<{
+        data: Array<{ username: string; nickname?: string; position?: string }>;
+      }>({
+        url: 'aiEmployees:list',
+        method: 'get',
+        params: { pageSize: 200, fields: ['username', 'nickname', 'position'] },
+        skipNotify: true,
+      });
+      return response?.data ?? { data: [] };
+    },
+    { manual: true },
+  );
+
+  const userRequest = useRequest(
+    async (): Promise<{ data: Array<{ id: number; nickname?: string; username?: string; email?: string }> }> => {
+      const response = await ctx.api.request<{
+        data: Array<{ id: number; nickname?: string; username?: string; email?: string }>;
+      }>({
+        url: 'users:list',
+        method: 'get',
+        params: { pageSize: 200, fields: ['id', 'nickname', 'username', 'email'] },
+        skipNotify: true,
+      });
+      return response?.data ?? { data: [] };
+    },
+    { manual: true },
+  );
+
+  const ensureModalDataLoaded = useCallback(() => {
+    if (!aiEmployeeRequest.data && !aiEmployeeRequest.loading) {
+      aiEmployeeRequest.run();
+    }
+    if (!userRequest.data && !userRequest.loading) {
+      userRequest.run();
+    }
+  }, [aiEmployeeRequest, userRequest]);
+
+  const aiEmployeeOptions = useMemo(
+    () =>
+      (aiEmployeeRequest.data?.data ?? []).map((emp) => ({
+        value: emp.username,
+        label: emp.nickname ? `${emp.nickname} (${emp.username})` : emp.username,
+      })),
+    [aiEmployeeRequest.data],
+  );
+
+  const userOptions = useMemo(
+    () =>
+      (userRequest.data?.data ?? []).map((u) => ({
+        value: u.id,
+        label: u.nickname || u.username || u.email || `#${u.id}`,
+      })),
+    [userRequest.data],
+  );
+
   const records = useMemo<FeishuAppRecord[]>(() => {
     const list = listRequest.data?.data;
     return Array.isArray(list) ? list : [];
@@ -104,7 +162,8 @@ const FeishuAppsPage: React.FC = () => {
     form.resetFields();
     form.setFieldsValue({ status: 'active' });
     setModalOpen(true);
-  }, [form]);
+    ensureModalDataLoaded();
+  }, [form, ensureModalDataLoaded]);
 
   const openEditModal = useCallback(
     (record: FeishuAppRecord) => {
@@ -118,8 +177,9 @@ const FeishuAppsPage: React.FC = () => {
         ai_act_as_user_id: record.ai_act_as_user_id,
       });
       setModalOpen(true);
+      ensureModalDataLoaded();
     },
-    [form],
+    [form, ensureModalDataLoaded],
   );
 
   const handleCancel = useCallback(() => {
@@ -369,10 +429,36 @@ const FeishuAppsPage: React.FC = () => {
             <Input.Password autoComplete="new-password" placeholder={editing ? t('Leave blank to keep current') : ''} />
           </Form.Item>
           <Form.Item name="ai_employee_username" label={t('AI Employee username')}>
-            <Input autoComplete="off" />
+            <Select
+              allowClear
+              showSearch
+              placeholder={t('Select AI Employee')}
+              loading={aiEmployeeRequest.loading}
+              options={aiEmployeeOptions}
+              optionFilterProp="label"
+              filterOption={(input, option) =>
+                String(option?.label ?? '')
+                  .toLowerCase()
+                  .includes(input.toLowerCase())
+              }
+              notFoundContent={aiEmployeeRequest.loading ? t('Loading') : t('No AI Employees configured')}
+            />
           </Form.Item>
           <Form.Item name="ai_act_as_user_id" label={t('Act as user (NocoBase ID)')}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+            <Select
+              allowClear
+              showSearch
+              placeholder={t('Select user (NocoBase identity for AI tool calls)')}
+              loading={userRequest.loading}
+              options={userOptions}
+              optionFilterProp="label"
+              filterOption={(input, option) =>
+                String(option?.label ?? '')
+                  .toLowerCase()
+                  .includes(input.toLowerCase())
+              }
+              notFoundContent={userRequest.loading ? t('Loading') : t('No matching users')}
+            />
           </Form.Item>
         </Form>
       </Modal>

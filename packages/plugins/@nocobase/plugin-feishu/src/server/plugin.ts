@@ -521,12 +521,27 @@ export class PluginFeishuServer extends Plugin {
         if (status === 'active') {
           this.app.log.info(`feishu.app.afterSave.reload app=${appId}`);
           await runtimeManager.reload(appId);
+          // Reload finished without throwing → the WS handshake succeeded with
+          // the current credentials. Stamp last_connected_at + clear last_error
+          // so the operator gets feedback even without clicking Test connection.
+          await this.app.db
+            .getRepository(COLLECTION.apps)
+            .update({
+              filter: { app_id: appId },
+              values: { last_connected_at: new Date(), last_error: null },
+            })
+            .catch(() => undefined);
         } else {
           this.app.log.info(`feishu.app.afterSave.stop app=${appId} status=${status}`);
           await runtimeManager.stop(appId);
         }
       } catch (err) {
-        log.warn(`feishu.app.afterSave.error ${appId} ${(err as Error).message}`);
+        const message = (err as Error).message;
+        log.warn(`feishu.app.afterSave.error ${appId} ${message}`);
+        await this.app.db
+          .getRepository(COLLECTION.apps)
+          .update({ filter: { app_id: appId }, values: { last_error: message } })
+          .catch(() => undefined);
       }
     });
     FeishuAppModel.afterDestroy(async (instance: { get: (k: string) => unknown }) => {
