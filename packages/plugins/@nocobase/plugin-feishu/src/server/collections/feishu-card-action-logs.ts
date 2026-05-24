@@ -13,6 +13,7 @@ import { COLLECTION } from '../constants';
 export default defineCollection({
   name: COLLECTION.cardActionLogs,
   title: 'Feishu Card Action Logs',
+  migrationRules: ['schema-only'],
   autoGenId: true,
   createdAt: true,
   updatedAt: false,
@@ -28,5 +29,13 @@ export default defineCollection({
     { type: 'string', name: 'result' },
     { type: 'json', name: 'result_detail' },
   ],
-  indexes: [{ unique: true, fields: ['app_id', 'event_id'] }, { fields: ['card_record_id', 'action_key'] }],
+  indexes: [
+    {
+      unique: true,
+      fields: ['app_id', 'event_id'],
+    },
+    {
+      fields: ['card_record_id', 'action_key'],
+    },
+  ],
 });

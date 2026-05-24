@@ -23,5 +23,13 @@ export default defineCollection({
     { type: 'integer', name: 'user_id' },
     { type: 'date', name: 'bound_at' },
   ],
-  indexes: [{ unique: true, fields: ['app_id', 'open_id'] }, { fields: ['app_id', 'user_id'] }],
+  indexes: [
+    {
+      unique: true,
+      fields: ['app_id', 'open_id'],
+    },
+    {
+      fields: ['app_id', 'user_id'],
+    },
+  ],
 });

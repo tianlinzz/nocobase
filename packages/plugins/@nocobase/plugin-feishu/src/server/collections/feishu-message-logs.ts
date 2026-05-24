@@ -13,6 +13,7 @@ import { COLLECTION } from '../constants';
 export default defineCollection({
   name: COLLECTION.messageLogs,
   title: 'Feishu Message Logs',
+  migrationRules: ['schema-only'],
   autoGenId: true,
   createdAt: true,
   updatedAt: false,

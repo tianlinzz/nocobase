@@ -7,7 +7,6 @@
  * For more information, please refer to: https://www.nocobase.com/agreement.
  */
 
-import { tval } from '@nocobase/utils/client';
 // @ts-ignore
 import pkg from '../../package.json';
 

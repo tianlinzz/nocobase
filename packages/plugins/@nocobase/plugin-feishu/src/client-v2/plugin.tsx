@@ -9,7 +9,7 @@
 
 import { Plugin, Application } from '@nocobase/client-v2';
 
-export class PluginFeishuClientV2 extends Plugin<any, Application> {
+export class PluginFeishuClientV2 extends Plugin<Record<string, never>, Application> {
   async load() {
     // populated in phase 9
   }

@@ -26,5 +26,13 @@ export default defineCollection({
     { type: 'json', name: 'context' },
     { type: 'integer', name: 'created_by_id' },
   ],
-  indexes: [{ unique: true, fields: ['app_id', 'message_id'] }, { fields: ['app_id', 'open_message_id'] }],
+  indexes: [
+    {
+      unique: true,
+      fields: ['app_id', 'message_id'],
+    },
+    {
+      fields: ['app_id', 'open_message_id'],
+    },
+  ],
 });
