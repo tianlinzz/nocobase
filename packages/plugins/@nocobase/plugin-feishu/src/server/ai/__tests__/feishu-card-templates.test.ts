@@ -29,14 +29,15 @@ describe('feishu-card-templates', () => {
     expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'partial response' });
   });
 
-  it('buildCompleteCard uses green header on success and includes elapsed note', () => {
+  it('buildCompleteCard uses green header and inlines elapsed time as italic markdown footer (no `note` tag — schema V2 dropped it)', () => {
     const card = buildCompleteCard('final answer', { elapsedMs: 2345 });
     expect(card.header).toMatchObject({ template: 'green' });
     const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
-    expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'final answer' });
-    expect(elements[1]).toMatchObject({
-      tag: 'note',
-      elements: [{ tag: 'plain_text', content: '用时 2.3s' }],
+    expect(elements).toHaveLength(1);
+    expect(elements[0]).toEqual({
+      tag: 'markdown',
+      element_id: ANSWER_ELEMENT_ID,
+      content: 'final answer\n\n_用时 2.3s_',
     });
   });
 
@@ -47,9 +48,10 @@ describe('feishu-card-templates', () => {
     expect(elements[0].content as string).toMatch(/LLM down/);
   });
 
-  it('buildCompleteCard without elapsedMs / errorMessage omits the note element', () => {
+  it('buildCompleteCard without elapsedMs / errorMessage stays a single markdown element with no footer suffix', () => {
     const card = buildCompleteCard('done');
     const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
     expect(elements).toHaveLength(1);
+    expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'done' });
   });
 });

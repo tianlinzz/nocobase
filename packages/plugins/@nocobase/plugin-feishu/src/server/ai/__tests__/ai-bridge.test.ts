@@ -308,17 +308,17 @@ describe('FeishuAIBridge', () => {
     expect(replyMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { text: 'block one block two' } }));
   });
 
-  it('reaction: adds 👀 EYES on the incoming message and removes it after success', async () => {
+  it('reaction: adds 🤔 THINKING on the incoming message and removes it after success', async () => {
     const { bridge, reactionService } = setup({ streamChunks: ['hi'] });
     await bridge.handleMessage('app1', baseParsed, baseContext);
-    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'EYES');
+    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'THINKING');
     expect(reactionService.remove).toHaveBeenCalledWith('app1', 'om_1', 'reac_xyz');
   });
 
   it('reaction: still removes the reaction in the failure path', async () => {
     const { bridge, reactionService } = setup({ streamError: new Error('llm down') });
     await expect(bridge.handleMessage('app1', baseParsed, baseContext)).rejects.toThrow('llm down');
-    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'EYES');
+    expect(reactionService.add).toHaveBeenCalledWith('app1', 'om_1', 'THINKING');
     expect(reactionService.remove).toHaveBeenCalledWith('app1', 'om_1', 'reac_xyz');
   });
 
@@ -329,7 +329,7 @@ describe('FeishuAIBridge', () => {
     await bridge.handleMessage('app1', baseParsed, baseContext);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringMatching(/reaction add failed/i),
-      expect.objectContaining({ emojiType: 'EYES' }),
+      expect.objectContaining({ emojiType: 'THINKING' }),
     );
     expect(reactionService.remove).not.toHaveBeenCalled();
     // AI flow still completes

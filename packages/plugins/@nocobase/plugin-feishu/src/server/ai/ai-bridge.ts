@@ -115,10 +115,15 @@ export interface ReactionService {
 
 /**
  * Feishu reaction `emoji_type` for the "received, processing" ack we add
- * to the user's incoming message. `EYES` (👀) per the brainstorming session;
- * see Feishu docs for the full list of valid emoji_type constants.
+ * to the user's incoming message. `THINKING` (🤔) — the brainstorming
+ * picked `EYES` (👀) but Feishu rejected that with code 231001 "reaction
+ * type is invalid"; `EYES` is not in the predefined emoji_type set
+ * (`GLANCE` / `EYESCLOSED` / `LOOKDOWN` exist but don't match the
+ * intent). `THINKING` was the next-best option from the same session and
+ * is verified valid against the docs at
+ * https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/emojis-introduce
  */
-const RECEIVE_REACTION_EMOJI = 'EYES';
+const RECEIVE_REACTION_EMOJI = 'THINKING';
 
 export interface AIBridgeDeps {
   app: AIBridgeAppLike;
