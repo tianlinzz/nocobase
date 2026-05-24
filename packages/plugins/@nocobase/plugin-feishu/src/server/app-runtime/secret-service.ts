@@ -44,8 +44,11 @@ export class SecretService {
     const tempManager = options.managerFactory ? options.managerFactory() : new FeishuClientManager();
     tempManager.addApp({ appId: tempKey, appSecret: config.appSecret });
     try {
-      await tempManager.getBotInfo(tempKey);
-      return { requestId: undefined };
+      // Use the lightweight `validateCredentials` (= app_access_token mint)
+      // instead of `getBotInfo` so failures of bot/v3/info don't shadow
+      // credential validity (e.g. the app has not been published yet, or a
+      // local HTTP proxy returns 400 for that specific endpoint).
+      return await tempManager.validateCredentials(tempKey);
     } catch (err) {
       if (err instanceof FeishuApiError) {
         // re-throw a sanitized error to avoid leaking credential material in upstream logs

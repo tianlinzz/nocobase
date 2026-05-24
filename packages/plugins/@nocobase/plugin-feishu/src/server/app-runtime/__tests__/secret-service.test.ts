@@ -33,26 +33,26 @@ describe('SecretService.validate', () => {
   function fakeManager(behavior: 'ok' | 'apiError' | 'throw') {
     const addApp = vi.fn();
     const removeApp = vi.fn();
-    const getBotInfo = vi.fn().mockImplementation(async (appId: string) => {
-      if (behavior === 'ok') return { appId };
+    const validateCredentials = vi.fn().mockImplementation(async (_appId: string) => {
+      if (behavior === 'ok') return { requestId: undefined };
       if (behavior === 'apiError') throw new FeishuApiError('upstream rejected', 99991663, 'rid-xyz');
       throw new Error('boom');
     });
-    return { addApp, removeApp, getBotInfo } as unknown as FeishuClientManager & {
+    return { addApp, removeApp, validateCredentials } as unknown as FeishuClientManager & {
       addApp: ReturnType<typeof vi.fn>;
       removeApp: ReturnType<typeof vi.fn>;
-      getBotInfo: ReturnType<typeof vi.fn>;
+      validateCredentials: ReturnType<typeof vi.fn>;
     };
   }
 
-  it('calls getBotInfo once and returns success', async () => {
+  it('calls validateCredentials once and returns success', async () => {
     const longLived = fakeManager('ok');
     const temp = fakeManager('ok');
     const service = new SecretService(longLived);
     const result = await service.validate({ appId: 'cli_app1', appSecret: 'sec' }, { managerFactory: () => temp });
     expect(result).toEqual({ requestId: undefined });
     expect(temp.addApp).toHaveBeenCalledTimes(1);
-    expect(temp.getBotInfo).toHaveBeenCalledTimes(1);
+    expect(temp.validateCredentials).toHaveBeenCalledTimes(1);
     expect(temp.removeApp).toHaveBeenCalledTimes(1);
     // long-lived manager must not be touched
     expect(longLived.addApp as unknown as { mock: { calls: unknown[] } }).toBeDefined();
@@ -65,8 +65,8 @@ describe('SecretService.validate', () => {
     const addArgs = temp.addApp.mock.calls[0][0];
     expect(addArgs.appId).toMatch(/^__validate__cli_appX__\d+$/);
     expect(addArgs.appSecret).toBe('super-secret');
-    // the synthetic id passed to getBotInfo + removeApp should match
-    expect(temp.getBotInfo.mock.calls[0][0]).toBe(addArgs.appId);
+    // the synthetic id passed to validateCredentials + removeApp should match
+    expect(temp.validateCredentials.mock.calls[0][0]).toBe(addArgs.appId);
     expect(temp.removeApp.mock.calls[0][0]).toBe(addArgs.appId);
   });
 
@@ -88,7 +88,7 @@ describe('SecretService.validate', () => {
     expect(temp.removeApp).toHaveBeenCalled();
   });
 
-  it('cleans up the temp manager even when getBotInfo throws non-FeishuApiError', async () => {
+  it('cleans up the temp manager even when validateCredentials throws non-FeishuApiError', async () => {
     const temp = fakeManager('throw');
     const service = new SecretService(fakeManager('ok'));
     await expect(

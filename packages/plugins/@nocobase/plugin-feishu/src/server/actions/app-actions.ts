@@ -84,6 +84,7 @@ export function registerAppActions(app: Application, deps: AppActionsDeps): void
           // bot info gracefully (test environments).
           let botOpenId: string | undefined;
           let botName: string | undefined;
+          let botInfoError: string | undefined;
           if (deps.clientManager) {
             const probeAppId = `__probe__${json.app_id}__${Date.now()}`;
             try {
@@ -91,6 +92,13 @@ export function registerAppActions(app: Application, deps: AppActionsDeps): void
               const info = await deps.clientManager.getBotInfo(probeAppId);
               botOpenId = info.botOpenId;
               botName = info.botName;
+            } catch (botErr) {
+              // Bot info is best-effort: an app whose credentials are valid
+              // but lacks the `bot:info` permission, or a local HTTP proxy
+              // that returns 400 for /bot/v3/info specifically, must NOT
+              // turn a successful credential check into a failure.
+              botInfoError = botErr instanceof Error ? botErr.message : String(botErr);
+              deps.log.warn(`feishu.app.testConnection.botInfo.skipped ${appId} ${botInfoError}`);
             } finally {
               deps.clientManager.removeApp(probeAppId);
             }
@@ -98,13 +106,16 @@ export function registerAppActions(app: Application, deps: AppActionsDeps): void
           await repo.update({
             filter: { app_id: appId },
             values: {
-              bot_open_id: botOpenId ?? json.app_id,
-              bot_name: botName ?? null,
+              // Only overwrite bot_open_id / bot_name when we actually got a
+              // value back; otherwise keep what's there so partial outages
+              // don't blank previously-discovered bot info.
+              ...(botOpenId ? { bot_open_id: botOpenId } : {}),
+              ...(botName ? { bot_name: botName } : {}),
               last_connected_at: new Date(),
-              last_error: null,
+              last_error: botInfoError ?? null,
             },
           });
-          ctx.body = { ok: true, botOpenId, botName };
+          ctx.body = { ok: true, botOpenId, botName, botInfoWarning: botInfoError };
         } catch (err) {
           if (err instanceof FeishuApiError) {
             // Persist the error so the operator can see it on the apps page.

@@ -137,10 +137,33 @@ export class FeishuClientManager {
   }
 
   /**
+   * Lightweight credential check: ask the SDK to mint an `app_access_token`.
+   * Distinct from {@link getBotInfo} so callers that only want to verify the
+   * app_id/app_secret pair (e.g. {@link SecretService.validate}) are not
+   * affected by `bot/v3/info` failing for unrelated reasons (e.g. the app
+   * has not been published yet, or a local HTTP proxy returns 400 for that
+   * specific endpoint).
+   */
+  async validateCredentials(appId: string): Promise<{ requestId?: string }> {
+    const client = this.requireClient(appId);
+    const tokenResp = await client.auth.appAccessToken.internal({
+      data: {},
+    });
+    if (tokenResp.code !== 0) {
+      throw new FeishuApiError(
+        `feishu validateCredentials failed: ${tokenResp.msg ?? 'unknown'}`,
+        tokenResp.code ?? -1,
+        extractRequestId(tokenResp),
+      );
+    }
+    return { requestId: extractRequestId(tokenResp) };
+  }
+
+  /**
    * Fetch real bot identity (`bot.open_id`, `bot.app_name`) so the UI can
-   * render which robot we are bound to and prove the credentials are actually
-   * valid. The Lark Node SDK does not expose a stable wrapper for the
-   * `/open-apis/bot/v3/info` endpoint, so we call `client.request` directly.
+   * render which robot we are bound to. The Lark Node SDK does not expose a
+   * stable wrapper for the `/open-apis/bot/v3/info` endpoint, so we call
+   * `client.request` directly.
    *
    * Note: the SDK's default response interceptor returns `resp.data`, meaning
    * the body we receive is already the Feishu envelope `{ code, msg, data }`
