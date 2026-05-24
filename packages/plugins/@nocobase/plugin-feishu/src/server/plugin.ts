@@ -8,6 +8,7 @@
  */
 
 import { Plugin } from '@nocobase/server';
+import { AIEmployee } from '@nocobase/plugin-ai';
 import { CACHE_NAMESPACE, COLLECTION } from './constants';
 import { FeishuClientManager } from './transport/feishu-client-manager';
 import { FeishuWebSocketManager } from './transport/ws-connection-manager';
@@ -155,27 +156,13 @@ export class PluginFeishuServer extends Plugin {
     };
     const responseRenderer = new FeishuResponseRenderer({ clientManager, log: richLog });
 
-    // Resolve `AIEmployee` lazily so plugin-feishu still loads in source trees
-    // where plugin-ai has not been built yet. If an AI route reaches this
-    // fallback, fail explicitly instead of reporting an empty successful reply.
-    const aiEmployeeClass = ((): AIEmployeeConstructor => {
-      try {
-        type AIEmployeeModule = typeof import('@nocobase/plugin-ai/server');
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const mod = require('@nocobase/plugin-ai/server') as AIEmployeeModule;
-        if (mod.AIEmployee) return mod.AIEmployee as unknown as AIEmployeeConstructor;
-      } catch (err) {
-        this.app.log.warn('feishu ai bridge: failed to load AIEmployee from @nocobase/plugin-ai/server', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      class FallbackAIEmployee {
-        async invoke(): Promise<never> {
-          throw new Error('@nocobase/plugin-ai/server does not export AIEmployee');
-        }
-      }
-      return FallbackAIEmployee as unknown as AIEmployeeConstructor;
-    })();
+    // Sibling plugins (plugin-ai-gigachat, plugin-data-visualization,
+    // plugin-localization) all import from '@nocobase/plugin-ai' directly.
+    // tsconfig.paths.json maps it to the src tree so dev mode resolves the
+    // export without a built dist; production builds resolve through the
+    // package's main field. We declare plugin-ai as a peerDependency so
+    // mis-installs surface at load time, not at first message.
+    const aiEmployeeClass: AIEmployeeConstructor = AIEmployee as unknown as AIEmployeeConstructor;
 
     const messageLogService = {
       record: async (params: MessageLogRecordParams): Promise<void> => {
