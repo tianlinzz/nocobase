@@ -401,6 +401,39 @@ export class PluginFeishuServer extends Plugin {
     registerMessageActions(this.app, { clientManager });
     registerDiagnosticsActions(this.app, { runtimeManager, wsManager, messageQueue });
 
+    // Mirror feishu_apps row changes into the runtime: status=active -> reload
+    // (creates a new SDK client + WS connection with the latest credentials);
+    // status=disabled -> stop. Without this hook, saving a fresh app_secret in
+    // the UI does not propagate to the running WebSocket — exactly what the
+    // design doc § 配置变更 requires.
+    const FeishuAppModel = this.app.db.getModel(COLLECTION.apps);
+    FeishuAppModel.afterSave(async (instance: { get: (k: string) => unknown }) => {
+      const appId = instance.get('app_id') as string;
+      const status = instance.get('status') as string;
+      if (!appId) return;
+      try {
+        if (status === 'active') {
+          this.app.log.info(`feishu.app.afterSave.reload app=${appId}`);
+          await runtimeManager.reload(appId);
+        } else {
+          this.app.log.info(`feishu.app.afterSave.stop app=${appId} status=${status}`);
+          await runtimeManager.stop(appId);
+        }
+      } catch (err) {
+        log.warn(`feishu.app.afterSave.error ${appId} ${(err as Error).message}`);
+      }
+    });
+    FeishuAppModel.afterDestroy(async (instance: { get: (k: string) => unknown }) => {
+      const appId = instance.get('app_id') as string;
+      if (!appId) return;
+      try {
+        this.app.log.info(`feishu.app.afterDestroy.stop app=${appId}`);
+        await runtimeManager.stop(appId);
+      } catch (err) {
+        log.warn(`feishu.app.afterDestroy.error ${appId} ${(err as Error).message}`);
+      }
+    });
+
     this.app.on('afterStart', async () => {
       try {
         await this.services.runtimeManager.startActiveApps();
