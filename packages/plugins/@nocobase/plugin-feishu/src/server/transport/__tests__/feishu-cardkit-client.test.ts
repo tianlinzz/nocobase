@@ -16,10 +16,16 @@ function makeFakeLarkClient() {
   const cardkitCardUpdate = vi.fn().mockResolvedValue({ code: 0, data: {} });
   const cardkitElementContent = vi.fn().mockResolvedValue({ code: 0, data: {} });
   const imMessageCreate = vi.fn().mockResolvedValue({ code: 0, data: { message_id: 'om_msg' } });
+  // Mirror the runtime SDK shape: `client.cardkit.v1.card.*` and
+  // `client.cardkit.v1.cardElement.*` (the `v1` namespace layer is real;
+  // see node_modules/@larksuiteoapi/node-sdk/lib/index.js:19662).
+  // `client.im.message.*` does NOT have a v1 layer at runtime.
   const client = {
     cardkit: {
-      card: { create: cardkitCardCreate, settings: cardkitCardSettings, update: cardkitCardUpdate },
-      cardElement: { content: cardkitElementContent },
+      v1: {
+        card: { create: cardkitCardCreate, settings: cardkitCardSettings, update: cardkitCardUpdate },
+        cardElement: { content: cardkitElementContent },
+      },
     },
     im: { message: { create: imMessageCreate } },
   };

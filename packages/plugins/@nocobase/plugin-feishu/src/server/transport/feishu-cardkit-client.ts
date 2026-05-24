@@ -60,7 +60,7 @@ export class FeishuCardKitClient {
   constructor(private readonly client: Lark.Client) {}
 
   async createCardEntity(cardJson: Record<string, unknown>): Promise<CreateCardEntityResult> {
-    const resp = await this.client.cardkit.card.create({
+    const resp = await this.client.cardkit.v1.card.create({
       data: { type: 'card_json', data: JSON.stringify(cardJson) },
     });
     if (resp.code !== 0) {
@@ -101,7 +101,7 @@ export class FeishuCardKitClient {
   }
 
   async streamCardContent(params: StreamCardContentParams): Promise<void> {
-    const resp = await this.client.cardkit.cardElement.content({
+    const resp = await this.client.cardkit.v1.cardElement.content({
       data: { content: params.content, sequence: params.sequence },
       path: { card_id: params.cardId, element_id: params.elementId },
     });
@@ -115,7 +115,7 @@ export class FeishuCardKitClient {
   }
 
   async setCardStreamingMode(params: SetCardStreamingModeParams): Promise<void> {
-    const resp = await this.client.cardkit.card.settings({
+    const resp = await this.client.cardkit.v1.card.settings({
       data: {
         settings: JSON.stringify({ config: { streaming_mode: params.streamingMode } }),
         sequence: params.sequence,
@@ -132,7 +132,7 @@ export class FeishuCardKitClient {
   }
 
   async updateCardKitCard(params: UpdateCardKitCardParams): Promise<void> {
-    const resp = await this.client.cardkit.card.update({
+    const resp = await this.client.cardkit.v1.card.update({
       data: {
         card: { type: 'card_json', data: JSON.stringify(params.cardJson) },
         sequence: params.sequence,
