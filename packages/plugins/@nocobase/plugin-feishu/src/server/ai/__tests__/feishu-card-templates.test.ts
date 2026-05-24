@@ -29,29 +29,43 @@ describe('feishu-card-templates', () => {
     expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'partial response' });
   });
 
-  it('buildCompleteCard uses green header and inlines elapsed time as italic markdown footer (no `note` tag — schema V2 dropped it)', () => {
+  it('buildCompleteCard uses green header + a notation-sized markdown footer with status and elapsed time', () => {
     const card = buildCompleteCard('final answer', { elapsedMs: 2345 });
     expect(card.header).toMatchObject({ template: 'green' });
     const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
-    expect(elements).toHaveLength(1);
-    expect(elements[0]).toEqual({
+    expect(elements).toHaveLength(2);
+    expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'final answer' });
+    expect(elements[1]).toEqual({
       tag: 'markdown',
-      element_id: ANSWER_ELEMENT_ID,
-      content: 'final answer\n\n_用时 2.3s_',
+      content: '已完成 · 耗时 2.3s',
+      text_size: 'notation',
     });
   });
 
-  it('buildCompleteCard with errorMessage uses red header and shows the error', () => {
+  it('buildCompleteCard with errorMessage uses red header, embeds error in answer body, and red status segment in footer', () => {
     const card = buildCompleteCard('', { errorMessage: 'LLM down' });
     expect(card.header).toMatchObject({ template: 'red' });
     const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
     expect(elements[0].content as string).toMatch(/LLM down/);
+    expect(elements[1]).toMatchObject({
+      tag: 'markdown',
+      text_size: 'notation',
+      content: expect.stringMatching(/出错/),
+    });
+    expect((elements[1] as { content: string }).content).toMatch(/<font color='red'>/);
   });
 
-  it('buildCompleteCard without elapsedMs / errorMessage stays a single markdown element with no footer suffix', () => {
+  it('buildCompleteCard without elapsedMs / errorMessage produces footer with just status', () => {
     const card = buildCompleteCard('done');
     const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
-    expect(elements).toHaveLength(1);
+    expect(elements).toHaveLength(2);
     expect(elements[0]).toEqual({ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: 'done' });
+    expect(elements[1]).toEqual({ tag: 'markdown', content: '已完成', text_size: 'notation' });
+  });
+
+  it('buildCompleteCard formats elapsed >60s as `Xm Ys` matching openclaw-lark formatElapsed', () => {
+    const card = buildCompleteCard('done', { elapsedMs: 75_500 });
+    const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+    expect((elements[1] as { content: string }).content).toContain('耗时 1m 16s');
   });
 });

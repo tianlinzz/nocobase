@@ -63,17 +63,30 @@ export interface BuildCompleteCardOptions {
 }
 
 /**
+ * Format elapsed milliseconds as a compact human-readable duration. Mirrors
+ * `formatElapsed` in larksuite/openclaw-lark's `src/card/builder.ts` —
+ * under 60s we keep one decimal (`12.3s`); past that, switch to `Xm Ys`.
+ */
+function formatElapsed(ms: number): string {
+  const seconds = ms / 1000;
+  return seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+/**
  * Terminal card after streaming is closed. Green template on success, red
- * on error; the elapsed time is appended as a small italic footer line
- * inside the answer markdown — schema 2.0 dropped the `note` tag (CardKit
- * rejects it with "cards of schema V2 no longer support this capability"),
- * so we cannot use the dedicated footer element openclaw-lark uses on
- * schema 1.x. Inlining as `_用时 X.Xs_` keeps the info with no extra tags.
+ * on error. The status + elapsed time live in a SEPARATE markdown element
+ * with `text_size: 'notation'` — that's the schema 2.0 idiom
+ * `larksuite/openclaw-lark` uses (`src/card/builder.ts:buildFooter`) since
+ * schema 2.0 dropped the dedicated `note` tag. Notation size renders as
+ * small grey text, the visual equivalent of the old `note` element.
  */
 export function buildCompleteCard(text: string, opts: BuildCompleteCardOptions = {}): Record<string, unknown> {
   const isError = !!opts.errorMessage;
-  const body = isError ? `**出错了**：${opts.errorMessage}\n\n${text}`.trim() : text;
-  const elapsedSuffix = opts.elapsedMs !== undefined ? `\n\n_用时 ${(opts.elapsedMs / 1000).toFixed(1)}s_` : '';
+  const answerContent = isError ? `**出错了**：${opts.errorMessage}\n\n${text}`.trim() : text;
+  const footerSegments: string[] = [isError ? "<font color='red'>出错</font>" : '已完成'];
+  if (opts.elapsedMs !== undefined) {
+    footerSegments.push(`耗时 ${formatElapsed(opts.elapsedMs)}`);
+  }
   return {
     schema: '2.0',
     header: {
@@ -81,7 +94,10 @@ export function buildCompleteCard(text: string, opts: BuildCompleteCardOptions =
       template: isError ? 'red' : 'green',
     },
     body: {
-      elements: [{ tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: `${body}${elapsedSuffix}` }],
+      elements: [
+        { tag: 'markdown', element_id: ANSWER_ELEMENT_ID, content: answerContent },
+        { tag: 'markdown', content: footerSegments.join(' · '), text_size: 'notation' },
+      ],
     },
   };
 }
