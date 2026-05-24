@@ -547,6 +547,7 @@ class FeishuConversationManager {
 要求：
 
 - `ctx.app`、`ctx.db`、`ctx.log` 必须是真实对象。
+- `ctx.res.write()` 必须存在。`AIEmployee` 的 `ChatStreamProtocol` 会把可见文本写成 SSE `data: ...` 帧；飞书桥接层应在这里收集 `type=content` 的 `body`，再转成飞书回复。
 - `actAsUserId` 配置存在时加载对应用户，写入 `ctx.auth.user` 和 `ctx.state.currentUser`。
 - `actAsUserId` 不存在时，不能让 AI 调用依赖 NocoBase 用户权限的数据工具。
 - `feishuContext` 写入 `ctx.state.feishuContext` 和 `ctx.action.params.values.feishuContext`。当前 AI tool adapter 只把 `config.context.ctx` 传给 tool 的 `invoke(ctx, args, runtime)`，所以不能依赖 runtime 上的自定义上下文。
@@ -559,14 +560,22 @@ class FeishuAIBridge {
 }
 ```
 
+`AIEmployee` 类不是挂在 `app` 上的全局对象。桥接层需要从 `@nocobase/plugin-ai/server` 取得 `AIEmployee` 类；运行时辅助能力通过 `ctx.app.pm.get('ai')` 取得 `PluginAIServer` 实例，并使用其中的 `aiEmployeesManager`、`aiManager` 等 manager。核心 `app.aiManager` 只负责 tools/skills/LLM/employee 定义注册，不负责直接创建某个会话里的 AIEmployee 实例。
+
+导入策略：
+
+- 发布/已构建环境下，`@nocobase/plugin-ai/server` 可用，因为包入口 `server.js` 会代理到 `dist/server/index.js`，且 `server.d.ts` 暴露了命名导出 `AIEmployee`。
+- 源码开发环境中，如果 `plugin-ai` 尚未构建，直接静态导入可能在模块加载阶段失败。因此飞书插件可以在 `load()` 内懒加载，但类型应写成 `typeof import('@nocobase/plugin-ai/server')`，不要写松散的 `{ AIEmployee?: ... }`。
+- 懒加载失败或没有导出 `AIEmployee` 时不能返回空回复型 fallback。应该记录错误，并在 AI 路由真正触发时显式失败，否则会出现“消息处理成功但飞书没有回复”的假成功。
+
 内部流程：
 
 1. 查询 AI Employee，使用 `employeeUsername` 而不是显示名。
 2. 获取 session。
-3. 用 `ai-context-factory` 构造本次调用使用的 NocoBase `ctx`，其中包含 `ctx.app`、`ctx.db`、`ctx.log`、可选 `ctx.auth.user` / `ctx.state.currentUser`，以及 `ctx.state.feishuContext`。
+3. 用 `ai-context-factory` 构造本次调用使用的 NocoBase `ctx`，其中包含 `ctx.app`、`ctx.db`、`ctx.log`、`ctx.res.write()`、可选 `ctx.auth.user` / `ctx.state.currentUser`，以及 `ctx.state.feishuContext`。
 4. 构造 `AIEmployee({ ctx, employee, sessionId, ... })`。
-5. 调用 `aiEmployee.invoke({ userMessages, writer })`；飞书上下文已经挂在该次调用使用的 `ctx` 上。
-6. 从 writer 收集的 AI 输出或 invoke 返回的 `messageId` 对应的 `aiMessages` 记录中解析最终回复。
+5. 调用 `aiEmployee.invoke({ userMessages })`；飞书上下文已经挂在该次调用使用的 `ctx` 上。
+6. 从 `ctx.res.write()` 收集的 SSE `content` 事件，或从 invoke 返回的 `messageId` 对应的 `aiMessages` 记录中解析最终回复。
 7. 根据解析出的回复类型通过 `response-renderer` 回复飞书。
 8. 所有异常写入 `feishu_message_logs`。
 
@@ -587,7 +596,8 @@ NocoBase 内部 AI Employee 的主要输出面向 Chat/SSE 协议，不是飞书
 
 ```text
 AIEmployee.invoke()
-  -> writer 收集 content/tool 状态/消息事件
+  -> ChatStreamProtocol 写 ctx.res.write(data: {...})
+  -> 飞书桥接收集 type=content 的 body
   -> 或根据 invokeResult.messageId 回读 aiMessages
   -> normalize 为 FeishuAIReply
   -> response-renderer 发送到飞书
@@ -595,8 +605,8 @@ AIEmployee.invoke()
 
 首期采用非流式回复：
 
-- `writer` 只累计最终可见文本内容，忽略 reasoning、tool status 等 UI 事件。
-- 如果 `invoke()` 返回 `messageId`，优先回读 `aiMessages` 里的最终 AI 文本，作为 writer 为空时的兜底。
+- 只累计 SSE `content` 事件的 `body` 作为最终可见文本，忽略 reasoning、tool status 等 UI 事件。
+- 如果 `invoke()` 返回 `messageId`，优先回读 `aiMessages` 里的最终 AI 文本，作为 SSE content 为空时的兜底。
 - 没有可见文本时，记录 `empty_success`，不向飞书发送空消息。
 - tool 调用结果只进入 AI 上下文，不直接透传给飞书用户，除非模型最终回复中引用。
 
